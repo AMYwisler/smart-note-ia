@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -12,10 +12,12 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect } from "expo-router";
-import { COLORS, ALL_CATEGORIES } from "@/src/lib/theme";
-import { listNotes, type Note } from "@/src/lib/api";
+import { COLORS } from "@/src/lib/theme";
+import { listNotes, getDashboard, type Note } from "@/src/lib/api";
 import NoteCard from "@/src/components/NoteCard";
 import QuickCaptureSheet from "@/src/components/QuickCaptureSheet";
+import CategoryRail from "@/src/components/CategoryRail";
+import SortMenu, { type SortKey } from "@/src/components/SortMenu";
 
 type StatusFilter = "all" | "todo" | "in_progress" | "done";
 
@@ -26,11 +28,13 @@ export default function NotesScreen() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [categoryFilter, setCategoryFilter] = useState<string | null>(null);
   const [urgentOnly, setUrgentOnly] = useState(false);
+  const [sort, setSort] = useState<SortKey>("recent");
   const [captureOpen, setCaptureOpen] = useState(false);
+  const [counts, setCounts] = useState<Record<string, number>>({});
 
   const fetchData = useCallback(async () => {
     try {
-      const params: any = {};
+      const params: any = { sort };
       if (statusFilter !== "all") params.status = statusFilter;
       if (categoryFilter) params.category = categoryFilter;
       if (urgentOnly) params.urgent = true;
@@ -42,34 +46,63 @@ export default function NotesScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [statusFilter, categoryFilter, urgentOnly]);
+  }, [statusFilter, categoryFilter, urgentOnly, sort]);
+
+  const fetchCounts = useCallback(async () => {
+    try {
+      const dash = await getDashboard();
+      const map: Record<string, number> = {};
+      for (const e of dash.by_category) map[e.category] = e.count;
+      setCounts(map);
+    } catch {}
+  }, []);
 
   useFocusEffect(
     useCallback(() => {
       fetchData();
-    }, [fetchData])
+      fetchCounts();
+    }, [fetchData, fetchCounts])
   );
 
   const onRefresh = () => {
     setRefreshing(true);
     fetchData();
+    fetchCounts();
   };
 
-  const statusOptions: { key: StatusFilter; label: string }[] = [
-    { key: "all", label: "Tout" },
-    { key: "todo", label: "À faire" },
-    { key: "in_progress", label: "En cours" },
-    { key: "done", label: "Fait" },
+  const statusOptions: { key: StatusFilter; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
+    { key: "all",         label: "Tout",      icon: "albums-outline" },
+    { key: "todo",        label: "À faire",   icon: "ellipse-outline" },
+    { key: "in_progress", label: "En cours",  icon: "play-circle-outline" },
+    { key: "done",        label: "Fait",      icon: "checkmark-circle-outline" },
   ];
+
+  // Group by primary category when sort = "category"
+  const groupedSections = useMemo(() => {
+    if (sort !== "category") return null;
+    const groups: { category: string; items: Note[] }[] = [];
+    const byCat: Record<string, Note[]> = {};
+    for (const n of notes) {
+      const cat = n.categories[0] || "Personnel";
+      (byCat[cat] = byCat[cat] || []).push(n);
+    }
+    for (const cat of Object.keys(byCat).sort()) {
+      groups.push({ category: cat, items: byCat[cat] });
+    }
+    return groups;
+  }, [notes, sort]);
 
   return (
     <SafeAreaView style={styles.container} edges={["top"]} testID="notes-screen">
       <View style={styles.header}>
-        <Text style={styles.title}>Mes notes</Text>
-        <Text style={styles.subtitle}>{notes.length} note{notes.length > 1 ? "s" : ""}</Text>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.title}>Mes notes</Text>
+          <Text style={styles.subtitle}>{notes.length} note{notes.length > 1 ? "s" : ""}</Text>
+        </View>
+        <SortMenu value={sort} onChange={setSort} />
       </View>
 
-      {/* Status filters */}
+      {/* Status + urgent chips */}
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
@@ -92,76 +125,63 @@ export default function NotesScreen() {
             Urgent
           </Text>
         </Pressable>
-
-        {statusOptions.map((s) => (
-          <Pressable
-            key={s.key}
-            testID={`filter-status-${s.key}`}
-            onPress={() => setStatusFilter(s.key)}
-            style={[
-              styles.chip,
-              statusFilter === s.key && styles.chipActive,
-            ]}
-          >
-            <Text
-              style={[
-                styles.chipText,
-                statusFilter === s.key && styles.chipTextActive,
-              ]}
+        <View style={styles.divider} />
+        {statusOptions.map((s) => {
+          const active = statusFilter === s.key;
+          return (
+            <Pressable
+              key={s.key}
+              testID={`filter-status-${s.key}`}
+              onPress={() => setStatusFilter(s.key)}
+              style={[styles.chip, active && styles.chipActive]}
             >
-              {s.label}
-            </Text>
-          </Pressable>
-        ))}
+              <Ionicons
+                name={s.icon}
+                size={14}
+                color={active ? "#fff" : COLORS.text}
+              />
+              <Text style={[styles.chipText, active && styles.chipTextActive]}>
+                {s.label}
+              </Text>
+            </Pressable>
+          );
+        })}
       </ScrollView>
 
-      {/* Category filters */}
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.filterRow}
-      >
-        <Pressable
-          testID="filter-cat-all"
-          onPress={() => setCategoryFilter(null)}
-          style={[styles.chip, !categoryFilter && styles.chipActive]}
-        >
-          <Text style={[styles.chipText, !categoryFilter && styles.chipTextActive]}>
-            Toutes catégories
-          </Text>
-        </Pressable>
-        {ALL_CATEGORIES.map((c) => (
-          <Pressable
-            key={c}
-            testID={`filter-cat-${c}`}
-            onPress={() => setCategoryFilter(c)}
-            style={[styles.chip, categoryFilter === c && styles.chipActive]}
-          >
-            <Text style={[styles.chipText, categoryFilter === c && styles.chipTextActive]}>
-              {c}
-            </Text>
-          </Pressable>
-        ))}
-      </ScrollView>
+      {/* Improved category rail with icons + counts */}
+      <CategoryRail
+        selected={categoryFilter}
+        onSelect={setCategoryFilter}
+        counts={counts}
+      />
 
       {loading ? (
         <View style={styles.loading}>
           <ActivityIndicator size="large" color={COLORS.black} />
         </View>
+      ) : groupedSections ? (
+        // Category-grouped view
+        <FlatList
+          data={groupedSections}
+          keyExtractor={(g) => g.category}
+          renderItem={({ item }) => (
+            <View style={{ marginBottom: 18 }}>
+              <Text style={styles.groupTitle}>{item.category} · {item.items.length}</Text>
+              {item.items.map((n) => <NoteCard key={n.id} note={n} />)}
+            </View>
+          )}
+          contentContainerStyle={styles.listContent}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+          ListEmptyComponent={<EmptyState />}
+        />
       ) : (
         <FlatList
           data={notes}
           keyExtractor={(n) => n.id}
           renderItem={({ item }) => <NoteCard note={item} />}
-          contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 100, paddingTop: 8 }}
+          contentContainerStyle={styles.listContent}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
-          ListEmptyComponent={
-            <View style={styles.empty}>
-              <Ionicons name="document-text-outline" size={48} color={COLORS.textTertiary} />
-              <Text style={styles.emptyTitle}>Aucune note</Text>
-              <Text style={styles.emptyText}>Appuyez sur + pour créer votre première note</Text>
-            </View>
-          }
+          ListEmptyComponent={<EmptyState />}
         />
       )}
 
@@ -176,29 +196,47 @@ export default function NotesScreen() {
       <QuickCaptureSheet
         visible={captureOpen}
         onClose={() => setCaptureOpen(false)}
-        onCreated={fetchData}
+        onCreated={() => { fetchData(); fetchCounts(); }}
       />
     </SafeAreaView>
   );
 }
 
+function EmptyState() {
+  return (
+    <View style={styles.empty}>
+      <Ionicons name="document-text-outline" size={48} color={COLORS.textTertiary} />
+      <Text style={styles.emptyTitle}>Aucune note</Text>
+      <Text style={styles.emptyText}>Appuyez sur + pour créer votre première note</Text>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.bg },
-  header: { paddingHorizontal: 20, paddingTop: 12, paddingBottom: 8 },
+  header: {
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    paddingBottom: 8,
+    flexDirection: "row",
+    alignItems: "flex-end",
+    gap: 12,
+  },
   title: { fontSize: 26, fontWeight: "800", color: COLORS.text, letterSpacing: -0.5 },
   subtitle: { fontSize: 13, color: COLORS.textSecondary, marginTop: 2 },
   filterRow: {
     paddingHorizontal: 20,
-    paddingVertical: 6,
+    paddingVertical: 4,
     gap: 8,
     flexDirection: "row",
+    alignItems: "center",
   },
   chip: {
     flexDirection: "row",
     alignItems: "center",
     gap: 4,
     paddingHorizontal: 12,
-    paddingVertical: 6,
+    paddingVertical: 7,
     borderRadius: 999,
     backgroundColor: COLORS.bg,
     borderWidth: 1,
@@ -207,6 +245,25 @@ const styles = StyleSheet.create({
   chipActive: { backgroundColor: COLORS.black, borderColor: COLORS.black },
   chipText: { fontSize: 12, color: COLORS.text, fontWeight: "600" },
   chipTextActive: { color: "#fff" },
+  divider: {
+    width: 1,
+    height: 22,
+    backgroundColor: COLORS.border,
+    marginHorizontal: 4,
+  },
+
+  groupTitle: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: COLORS.textSecondary,
+    letterSpacing: 1.2,
+    textTransform: "uppercase",
+    paddingLeft: 4,
+    marginBottom: 10,
+  },
+
+  listContent: { paddingHorizontal: 20, paddingBottom: 100, paddingTop: 8 },
+
   loading: { flex: 1, alignItems: "center", justifyContent: "center" },
   empty: { alignItems: "center", paddingVertical: 60, gap: 8 },
   emptyTitle: { fontSize: 17, fontWeight: "700", color: COLORS.text },

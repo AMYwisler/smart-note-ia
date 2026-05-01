@@ -53,12 +53,14 @@ export async function listNotes(params: {
   status?: string;
   urgent?: boolean;
   q?: string;
+  sort?: "recent" | "oldest" | "urgent" | "reminder" | "category";
 } = {}): Promise<Note[]> {
   const qs = new URLSearchParams();
   if (params.category) qs.set("category", params.category);
   if (params.status) qs.set("status", params.status);
   if (typeof params.urgent === "boolean") qs.set("urgent", String(params.urgent));
   if (params.q) qs.set("q", params.q);
+  if (params.sort) qs.set("sort", params.sort);
   const url = `${API}/notes${qs.toString() ? "?" + qs.toString() : ""}`;
   const res = await fetch(url);
   return handle<Note[]>(res);

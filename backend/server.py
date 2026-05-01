@@ -273,6 +273,7 @@ async def list_notes(
     status: Optional[str] = None,
     urgent: Optional[bool] = None,
     q: Optional[str] = None,
+    sort: Optional[str] = "recent",  # recent | oldest | urgent | reminder | category
     limit: int = 200,
 ):
     query: dict = {}
@@ -290,9 +291,28 @@ async def list_notes(
             {"ocr_text": {"$regex": q, "$options": "i"}},
         ]
 
-    cursor = db.notes.find(query, {"_id": 0}).sort("created_at", -1).limit(limit)
+    sort_spec: list = [("created_at", -1)]
+    if sort == "oldest":
+        sort_spec = [("created_at", 1)]
+    elif sort == "urgent":
+        sort_spec = [("urgent", -1), ("created_at", -1)]
+    elif sort == "reminder":
+        # Notes with reminder first (ascending), then those without
+        sort_spec = [("reminder_date", 1), ("created_at", -1)]
+    elif sort == "category":
+        sort_spec = [("categories", 1), ("created_at", -1)]
+
+    cursor = db.notes.find(query, {"_id": 0}).sort(sort_spec).limit(limit)
     docs = await cursor.to_list(limit)
-    return [Note(**d) for d in docs]
+    notes = [Note(**d) for d in docs]
+
+    # For "reminder" sort, push notes without reminder to the end (Mongo sorts null first)
+    if sort == "reminder":
+        with_rem = [n for n in notes if n.reminder_date]
+        without_rem = [n for n in notes if not n.reminder_date]
+        notes = with_rem + without_rem
+
+    return notes
 
 
 @api_router.get("/notes/{note_id}", response_model=Note)

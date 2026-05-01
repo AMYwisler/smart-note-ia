@@ -10,13 +10,14 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { useFocusEffect } from "expo-router";
-import { COLORS } from "@/src/lib/theme";
+import { useFocusEffect, useRouter } from "expo-router";
+import { COLORS, CATEGORY_COLORS, CATEGORY_ICONS } from "@/src/lib/theme";
 import { getDashboard, type DashboardData } from "@/src/lib/api";
 import NoteCard from "@/src/components/NoteCard";
 import QuickCaptureSheet from "@/src/components/QuickCaptureSheet";
 
 export default function DashboardScreen() {
+  const router = useRouter();
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -139,6 +140,51 @@ export default function DashboardScreen() {
                 data.upcoming_reminders.slice(0, 5).map((n) => <NoteCard key={n.id} note={n} />)
               )}
             </Section>
+
+            {/* Categories grid */}
+            {data.by_category.length > 0 && (
+              <View style={styles.section}>
+                <View style={styles.sectionHeader}>
+                  <View style={styles.sectionTitleRow}>
+                    <Ionicons name="pricetags" size={18} color={COLORS.text} />
+                    <Text style={styles.sectionTitle}>Catégories actives</Text>
+                  </View>
+                  <View style={styles.countPill}>
+                    <Text style={styles.countText}>{data.by_category.length}</Text>
+                  </View>
+                </View>
+                <View style={styles.catGrid}>
+                  {data.by_category.map((c) => {
+                    const color = CATEGORY_COLORS[c.category] || { bg: "#F3F4F6", text: "#4B5563", border: "#E5E7EB" };
+                    const icon = (CATEGORY_ICONS[c.category] || "pricetag") as keyof typeof Ionicons.glyphMap;
+                    return (
+                      <Pressable
+                        key={c.category}
+                        testID={`dashboard-cat-${c.category}`}
+                        onPress={() => router.push(`/notes`)}
+                        style={({ pressed }) => [
+                          styles.catTile,
+                          { backgroundColor: color.bg, borderColor: color.border },
+                          pressed && { opacity: 0.85 },
+                        ]}
+                      >
+                        <View style={[styles.catIconBubble, { backgroundColor: "#FFFFFF" }]}>
+                          <Ionicons name={icon} size={18} color={color.text} />
+                        </View>
+                        <View style={{ flex: 1 }}>
+                          <Text style={[styles.catTileName, { color: color.text }]} numberOfLines={1}>
+                            {c.category}
+                          </Text>
+                          <Text style={[styles.catTileCount, { color: color.text }]}>
+                            {c.count} ouverte{c.count > 1 ? "s" : ""}
+                          </Text>
+                        </View>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              </View>
+            )}
 
             {data.stats.total === 0 && (
               <View style={styles.welcome}>
@@ -275,6 +321,28 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   emptyMiniText: { color: COLORS.textTertiary, fontSize: 13 },
+
+  catGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
+  catTile: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    width: "48%",
+    minHeight: 64,
+  },
+  catIconBubble: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  catTileName: { fontSize: 14, fontWeight: "800" },
+  catTileCount: { fontSize: 12, fontWeight: "600", opacity: 0.85 },
 
   welcome: {
     marginHorizontal: 20,

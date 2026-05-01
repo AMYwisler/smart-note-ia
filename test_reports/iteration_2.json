@@ -1,0 +1,46 @@
+{
+  "summary": "Iteration 2 — sort options + improved category UI tested. Backend: 10/10 new pytest tests pass on /api/notes?sort=recent|oldest|urgent|reminder|category and /api/dashboard by_category. Frontend (mobile 390x844): dashboard renders new 'Catégories actives' grid with 12 colored tiles (dashboard-cat-Devis shows '26 ouvertes' etc.); Notes screen sort-button opens sort-sheet with 5 options (recent/oldest/urgent/reminder/category) — all tap correctly and re-render the list; sort=urgent puts urgent notes (Avocat divorce, Amende RATP) first; sort=category groups into sections with titles like 'ADMINISTRATIF · 14'; CategoryRail with cat-rail-Devis/Finances/etc. renders icons + counts and filters when tapped; status filter chips and filter-urgent toggle still work; NoteCard category badges now render Ionicons (Famille/heart, Devis/diamond, Clients/people, Urgent/alert). Pre-existing CRUD regression tests in test_smart_notes.py are stale (POST returns List[Note] since multi-split fix) but NOT part of iteration 2 scope.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/notes?sort=category", "issue": "Mongo sorts arrays by their MIN element, so the 'first category' alphabetical guarantee is approximate (e.g., a note ['Urgent','Devis'] sorts as if its key were 'Devis'). The frontend re-groups in JS using categories[0], so visual grouping is correct. No user-facing bug."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Notes (sort=category active)", "issues": ["Category-rail horizontal chips area visually overlaps the first group title slightly on mobile width 390px due to the rail z-index above the FlatList header. Cosmetic only — content remains tappable and group titles are readable on scroll."]}
+    ],
+    "react_native_issues": [
+      {"component": "global", "issue": "Console emits cosmetic deprecation warnings: 'shadow* style props are deprecated. Use boxShadow' and 'props.pointerEvents is deprecated'. Carried over from iter 1, not blocking."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_sort_and_categories.py",
+    "/app/backend/tests/test_smart_notes.py",
+    "/app/test_reports/pytest/sort_results.xml"
+  ],
+  "action_items": [
+    "(Optional) Validate sort= against an enum on the backend so unknown values 400 instead of silently falling back to recent.",
+    "(Optional, pre-existing) Update test_smart_notes.py CRUD tests: POST /api/notes now returns List[Note], so r.json()[0]['id'] instead of r.json()['id']. Out of iter-2 scope — flagged for housekeeping.",
+    "(Optional) Reduce CategoryRail vertical bleed when sort=category is active, or add 8–12px more top padding on the FlatList grouped sections."
+  ],
+  "critical_code_review_comments": [
+    "server.py list_notes correctly post-processes sort=reminder to push null reminders to the end (Mongo default places nulls first in asc).",
+    "Sort spec for 'urgent' uses [(urgent, -1), (created_at, -1)] — booleans sort correctly in Mongo (True>False).",
+    "notes.tsx groupedSections memo uses categories[0] || 'Personnel' fallback which keeps notes without categories from being dropped.",
+    "Dashboard by_category aggregation already excludes status='done', matching the 'Catégories actives' (open) intent. Counts shown match.",
+    "CategoryRail correctly toggles selection (re-tap deselects) and shows count=0 bubble for empty categories which is a nice affordance.",
+    "All new interactive elements have testID (sort-button, sort-sheet, sort-option-*, cat-rail-*, dashboard-cat-*, filter-urgent, filter-status-*)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_sort_and_categories.py (created)"
+  ],
+  "success_rate": {"backend": "100% (10/10 new sort+category tests)", "frontend": "100% on iteration-2 features"},
+  "seed_data_creation": "No new seed data created. Used existing ~67 notes already in the DB.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Public URL is https://smart-capture-ai-2.preview.emergentagent.com (from frontend/.env EXPO_PUBLIC_BACKEND_URL — the URL in the review_request from main agent was a different/stale id but the env value works). Reuse /app/backend/tests/test_sort_and_categories.py for sort regression. Pre-existing CRUD tests in /app/backend/tests/test_smart_notes.py are stale because POST /api/notes now returns List[Note] (multi-split). When testing dashboard category tiles, scroll down ~800px on a 390x844 mobile viewport to bring 'Catégories actives' into view. Sort menu testIDs: sort-button → sort-sheet → sort-option-{recent|oldest|urgent|reminder|category}. Category rail testIDs: cat-rail-all, cat-rail-{CategoryName}. Dashboard category tiles: dashboard-cat-{CategoryName}.",
+  "rca_of_issue": "No iteration-2 bugs found. The only flagged issue is a minor Mongo array-sort semantic for sort=category which is mitigated by frontend grouping using categories[0]."
+}
