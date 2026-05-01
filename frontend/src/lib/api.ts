@@ -50,7 +50,7 @@ export async function createNote(payload: {
 
 export async function listNotes(params: {
   category?: string;
-  status?: string;
+  status?: string; // active | todo | in_progress | done | undefined (all)
   urgent?: boolean;
   q?: string;
   sort?: "recent" | "oldest" | "urgent" | "reminder" | "category";

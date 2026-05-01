@@ -1,0 +1,37 @@
+{
+  "summary": "Iteration 3 — delete-bug fix and 'Archive' / 'Actives' filter validated. Backend: 6/6 new pytest tests pass on /api/notes?status=active|done|todo and DELETE regression (active+done==all partition verified, done excluded from active list). Frontend (mobile 390x844): filter chips filter-status-active (default 'Actives'), -todo, -in_progress, -done ('Archive'), -all ('Tout') all render and switch the list correctly. Empirically active(25)+done(2)=all(27) — perfect partition on Devis category. Note detail: tapping delete-btn opens ConfirmDialog with confirm-dialog-cancel and confirm-dialog-confirm; cancel closes the modal AND keeps the note (verified with GET 200 after cancel); confirm calls DELETE /api/notes/{id} -> 200 and the note returns 404 afterwards. status-done PATCH succeeds, note becomes done in DB and disappears from /api/notes?status=active. Regression: status-todo, status-in_progress, toggle-urgent all functional via UI.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "global", "issue": "Pre-existing cosmetic warnings: 'shadow* style props are deprecated. Use boxShadow' and 'props.pointerEvents is deprecated'. Carried over from earlier iterations, not blocking."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_status_active_filter.py",
+    "/app/test_reports/pytest/iteration3_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py list_notes: special-cases status='active' as {$ne: 'done'} while keeping exact match for 'todo'/'in_progress'/'done'. Clean and unambiguous.",
+    "ConfirmDialog.tsx is a proper cross-platform Modal with backdrop tap-to-cancel (Pressable backdrop + e.stopPropagation on inner box) and disabled cancel while deleting (onCancel guarded by !deleting in caller). Solid replacement for Alert.alert.",
+    "note/[id].tsx: performDelete sets deleting=true, calls deleteNote, closes modal, then router.back(). On error it resets deleting and closes modal before showing Alert — good UX.",
+    "Auto-navigate-back on status='done' uses setTimeout(router.back, 350) — gives the segmented control a visual frame to confirm the change. Note: when there is no back-stack (e.g. deep-link), router.back() emits 'GO_BACK was not handled' dev warning; in normal in-app navigation (list→detail→done) this path is fine.",
+    "notes.tsx default StatusFilter is 'active' so done notes are hidden from main list immediately on app open (matches the bug ask).",
+    "All required testIDs present: filter-status-{active|todo|in_progress|done|all}, delete-btn, confirm-dialog-confirm, confirm-dialog-cancel, status-{todo|in_progress|done}, toggle-urgent."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_status_active_filter.py (created)"
+  ],
+  "success_rate": {"backend": "100% (6/6 iter3 tests)", "frontend": "100% on iteration-3 features"},
+  "seed_data_creation": "Each test creates and deletes its own TEST_-prefixed notes; nothing leaked.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Public URL: https://smart-capture-ai-2.preview.emergentagent.com (frontend/.env EXPO_PUBLIC_BACKEND_URL). Reuse /app/backend/tests/test_status_active_filter.py for delete + active/done filter regression. Pre-existing /app/backend/tests/test_smart_notes.py CRUD POST tests are stale (POST returns List[Note]) — flagged in iter2, still untouched. Filter chip testIDs: filter-status-{active,todo,in_progress,done,all}. Confirm dialog testIDs: confirm-dialog-confirm, confirm-dialog-cancel. When testing auto-back on status='done', start from /notes screen and tap into the note (NOT direct deep-link) so router has a back-stack, otherwise expo-router emits 'GO_BACK not handled' (cosmetic dev warning).",
+  "rca_of_issue": "Iteration 3 fixed two regressions: (1) Alert.alert on react-native-web has known broken callbacks; replaced by custom Modal-based ConfirmDialog. Verified via UI: cancel keeps the note (GET 200), confirm performs DELETE→200 and GET→404. (2) Done notes were polluting the main list. Backend now supports status='active' = {$ne:'done'} and frontend defaults to 'Actives'; partition verified active+done==all on a real category."
+}

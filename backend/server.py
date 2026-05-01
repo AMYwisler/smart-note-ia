@@ -279,7 +279,12 @@ async def list_notes(
     query: dict = {}
     if category:
         query["categories"] = category
-    if status:
+    # Special status values:
+    # - "active" = not done (default UX): hide completed notes from main list
+    # - "todo" / "in_progress" / "done" = exact match
+    if status == "active":
+        query["status"] = {"$ne": "done"}
+    elif status:
         query["status"] = status
     if urgent is not None:
         query["urgent"] = urgent

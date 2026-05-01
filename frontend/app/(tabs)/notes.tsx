@@ -19,13 +19,13 @@ import QuickCaptureSheet from "@/src/components/QuickCaptureSheet";
 import CategoryRail from "@/src/components/CategoryRail";
 import SortMenu, { type SortKey } from "@/src/components/SortMenu";
 
-type StatusFilter = "all" | "todo" | "in_progress" | "done";
+type StatusFilter = "active" | "todo" | "in_progress" | "done" | "all";
 
 export default function NotesScreen() {
   const [notes, setNotes] = useState<Note[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("active");
   const [categoryFilter, setCategoryFilter] = useState<string | null>(null);
   const [urgentOnly, setUrgentOnly] = useState(false);
   const [sort, setSort] = useState<SortKey>("recent");
@@ -71,10 +71,11 @@ export default function NotesScreen() {
   };
 
   const statusOptions: { key: StatusFilter; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
-    { key: "all",         label: "Tout",      icon: "albums-outline" },
-    { key: "todo",        label: "À faire",   icon: "ellipse-outline" },
-    { key: "in_progress", label: "En cours",  icon: "play-circle-outline" },
-    { key: "done",        label: "Fait",      icon: "checkmark-circle-outline" },
+    { key: "active",      label: "Actives",     icon: "flash-outline" },
+    { key: "todo",        label: "À faire",     icon: "ellipse-outline" },
+    { key: "in_progress", label: "En cours",    icon: "play-circle-outline" },
+    { key: "done",        label: "Archive",     icon: "archive-outline" },
+    { key: "all",         label: "Tout",        icon: "albums-outline" },
   ];
 
   // Group by primary category when sort = "category"

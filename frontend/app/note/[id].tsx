@@ -8,13 +8,13 @@ import {
   Image,
   ActivityIndicator,
   Alert,
-  Platform,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { COLORS, STATUS_LABEL } from "@/src/lib/theme";
 import CategoryBadge from "@/src/components/CategoryBadge";
+import ConfirmDialog from "@/src/components/ConfirmDialog";
 import { getNote, updateNote, deleteNote, type Note } from "@/src/lib/api";
 
 const STATUSES: ("todo" | "in_progress" | "done")[] = ["todo", "in_progress", "done"];
@@ -25,6 +25,8 @@ export default function NoteDetailScreen() {
   const [note, setNote] = useState<Note | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   const fetchNote = useCallback(async () => {
     if (!id) return;
@@ -46,6 +48,10 @@ export default function NoteDetailScreen() {
     try {
       const updated = await updateNote(note.id, { status: s });
       setNote(updated);
+      // When marking as done, auto-return to list (note disappears from "Actives")
+      if (s === "done") {
+        setTimeout(() => router.back(), 350);
+      }
     } catch (e: any) {
       Alert.alert("Erreur", e.message);
     } finally {
@@ -68,35 +74,21 @@ export default function NoteDetailScreen() {
 
   const onDelete = () => {
     if (!note) return;
-    const doDelete = async () => {
-      try {
-        await deleteNote(note.id);
-        router.back();
-      } catch (e: any) {
-        if (Platform.OS === "web") {
-          window.alert(`Erreur: ${e.message}`);
-        } else {
-          Alert.alert("Erreur", e.message);
-        }
-      }
-    };
+    setConfirmDeleteOpen(true);
+  };
 
-    if (Platform.OS === "web") {
-      // Alert.alert callbacks don't fire on react-native-web; use window.confirm
-      if (window.confirm("Supprimer la note ? Cette action est irréversible.")) {
-        doDelete();
-      }
-      return;
+  const performDelete = async () => {
+    if (!note) return;
+    setDeleting(true);
+    try {
+      await deleteNote(note.id);
+      setConfirmDeleteOpen(false);
+      router.back();
+    } catch (e: any) {
+      setDeleting(false);
+      setConfirmDeleteOpen(false);
+      Alert.alert("Erreur", e.message || "Suppression impossible");
     }
-
-    Alert.alert(
-      "Supprimer la note ?",
-      "Cette action est irréversible.",
-      [
-        { text: "Annuler", style: "cancel" },
-        { text: "Supprimer", style: "destructive", onPress: doDelete },
-      ]
-    );
   };
 
   if (loading) {
@@ -262,6 +254,17 @@ export default function NoteDetailScreen() {
           )}
         </View>
       </ScrollView>
+
+      <ConfirmDialog
+        visible={confirmDeleteOpen}
+        title="Supprimer la note ?"
+        message="Cette action est irréversible."
+        confirmLabel={deleting ? "Suppression…" : "Supprimer"}
+        cancelLabel="Annuler"
+        destructive
+        onConfirm={performDelete}
+        onCancel={() => !deleting && setConfirmDeleteOpen(false)}
+      />
     </SafeAreaView>
   );
 }
