@@ -90,7 +90,7 @@ export default function QuickCaptureSheet({ visible, onClose, onCreated }: Props
     }
     setLoading(true);
     try {
-      await createNote({
+      const created = await createNote({
         content: content.trim(),
         image_base64: imageBase64,
         image_mime: imageMime,
@@ -98,6 +98,15 @@ export default function QuickCaptureSheet({ visible, onClose, onCreated }: Props
       reset();
       onCreated();
       onClose();
+      // Feedback when AI splits into multiple notes
+      const n = Array.isArray(created) ? created.length : 1;
+      if (n > 1) {
+        if (Platform.OS === "web") {
+          window.alert(`${n} notes créées par l'IA selon les catégories détectées.`);
+        } else {
+          Alert.alert("Découpage automatique", `L'IA a séparé votre saisie en ${n} notes distinctes.`);
+        }
+      }
     } catch (e: any) {
       Alert.alert("Erreur", e.message || "Création impossible");
       setLoading(false);

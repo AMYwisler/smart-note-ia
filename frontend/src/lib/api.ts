@@ -39,13 +39,13 @@ export async function createNote(payload: {
   content?: string;
   image_base64?: string | null;
   image_mime?: string | null;
-}): Promise<Note> {
+}): Promise<Note[]> {
   const res = await fetch(`${API}/notes`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-  return handle<Note>(res);
+  return handle<Note[]>(res);
 }
 
 export async function listNotes(params: {

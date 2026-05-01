@@ -131,30 +131,52 @@ def _heuristic_urgent(text: str) -> bool:
     return any(kw in low for kw in URGENT_KEYWORDS)
 
 
-async def classify_note(text: str) -> dict:
-    """Use GPT-5.2 to classify note: categories, urgency, title, summary, reminder date, amount."""
+def _fallback_item(text: str) -> dict:
+    return {
+        "content": text,
+        "title": (text[:60] or "Note").strip(),
+        "summary": text[:200],
+        "categories": ["Personnel"],
+        "urgent": _heuristic_urgent(text),
+        "reminder_date": None,
+        "amount": None,
+    }
+
+
+async def classify_note(text: str, allow_split: bool = True) -> list[dict]:
+    """
+    Use GPT-5.2 to:
+    - Detect if the input contains MULTIPLE distinct notes (different topics/tasks).
+    - For each detected note, return: content, title, summary, categories, urgency, reminder date, amount.
+    Returns a list of items (1 or more).
+    """
     if not EMERGENT_LLM_KEY or not text.strip():
-        return {
-            "title": (text[:60] or "Note").strip(),
-            "summary": text[:200],
-            "categories": ["Personnel"],
-            "urgent": _heuristic_urgent(text),
-            "reminder_date": None,
-            "amount": None,
-        }
+        return [_fallback_item(text)]
 
     today = datetime.now(timezone.utc).date().isoformat()
+    split_instruction = (
+        "L'utilisateur peut écrire PLUSIEURS notes/tâches/idées en vrac dans le même bloc. "
+        "Tu dois IDENTIFIER chaque idée distincte et la séparer en éléments. "
+        "Une idée distincte = un sujet différent, une tâche différente, ou une catégorie clairement différente. "
+        "Si tout le texte parle du MÊME sujet/tâche, retourne UN SEUL élément. "
+        "Ne découpe PAS artificiellement: regroupe les phrases qui parlent du même sujet. "
+    ) if allow_split else (
+        "Considère TOUT le texte comme UNE SEULE note. Retourne un seul élément. "
+    )
+
     system = (
         "Tu es une IA qui organise des notes en français. "
         f"Aujourd'hui = {today}. "
+        f"{split_instruction}"
         f"Catégories possibles: {', '.join(CATEGORIES)}. "
-        "Réponds UNIQUEMENT avec un JSON strict (pas de markdown) avec ces clés: "
+        "Réponds UNIQUEMENT avec un JSON strict (pas de markdown). "
+        "Format: {\"items\": [ ... ]} où chaque item a: "
+        "content (string: le texte original concernant cette note, en gardant les phrases d'origine), "
         "title (string court 3-8 mots), "
-        "summary (string 1 phrase), "
+        "summary (string 1 phrase courte), "
         "categories (array de 1 à 3 catégories de la liste), "
-        "urgent (bool, true si mots: amende, avocat, tribunal, urgent, demain, échéance, impôts, retard, paiement immédiat, OU si délai très court), "
-        "reminder_date (string ISO YYYY-MM-DD ou null si aucune date détectée. "
-        "Détecte: 'demain', 'lundi prochain', 'dans 3 jours', 'vendredi', 'avant jeudi', dates explicites), "
+        "urgent (bool, true si mots: amende, avocat, tribunal, urgent, demain, échéance, impôts, retard, paiement immédiat, OU délai très court), "
+        "reminder_date (string ISO YYYY-MM-DD ou null. Détecte: 'demain', 'lundi prochain', 'dans 3 jours', 'vendredi', 'avant jeudi', dates explicites), "
         "amount (number en euros ou null)."
     )
 
@@ -167,36 +189,37 @@ async def classify_note(text: str) -> dict:
     try:
         response = await chat.send_message(UserMessage(text=text))
         raw = str(response).strip()
-        # Strip code fences if present
         raw = re.sub(r"^```(?:json)?", "", raw).strip()
         raw = re.sub(r"```$", "", raw).strip()
         data = json.loads(raw)
 
-        # Validate categories
-        cats = [c for c in data.get("categories", []) if c in CATEGORIES]
-        if not cats:
-            cats = ["Personnel"]
+        items_raw = data.get("items") or []
+        if not isinstance(items_raw, list) or not items_raw:
+            return [_fallback_item(text)]
 
-        urgent_flag = bool(data.get("urgent", False)) or _heuristic_urgent(text)
+        results: list[dict] = []
+        for item in items_raw:
+            if not isinstance(item, dict):
+                continue
+            content = str(item.get("content") or "").strip() or text
+            cats = [c for c in (item.get("categories") or []) if c in CATEGORIES]
+            if not cats:
+                cats = ["Personnel"]
+            urgent_flag = bool(item.get("urgent", False)) or _heuristic_urgent(content)
+            results.append({
+                "content": content,
+                "title": str(item.get("title") or content[:60] or "Note").strip(),
+                "summary": str(item.get("summary") or content[:200]).strip(),
+                "categories": cats,
+                "urgent": urgent_flag,
+                "reminder_date": item.get("reminder_date"),
+                "amount": item.get("amount"),
+            })
 
-        return {
-            "title": str(data.get("title") or text[:60] or "Note").strip(),
-            "summary": str(data.get("summary") or text[:200]).strip(),
-            "categories": cats,
-            "urgent": urgent_flag,
-            "reminder_date": data.get("reminder_date"),
-            "amount": data.get("amount"),
-        }
+        return results or [_fallback_item(text)]
     except Exception as e:
         logger.exception("Classification failed: %s", e)
-        return {
-            "title": (text[:60] or "Note").strip(),
-            "summary": text[:200],
-            "categories": ["Personnel"],
-            "urgent": _heuristic_urgent(text),
-            "reminder_date": None,
-            "amount": None,
-        }
+        return [_fallback_item(text)]
 
 
 # ----- Routes -----
@@ -205,13 +228,14 @@ async def root():
     return {"message": "Smart Notes IA API", "version": "1.0"}
 
 
-@api_router.post("/notes", response_model=Note)
+@api_router.post("/notes", response_model=List[Note])
 async def create_note(payload: NoteCreate):
     ocr_text = None
     full_text = payload.content or ""
 
     # If image provided, run OCR first
-    if payload.image_base64:
+    has_image = bool(payload.image_base64)
+    if has_image:
         mime = payload.image_mime or "image/jpeg"
         ocr_text = await run_ocr(payload.image_base64, mime)
         if ocr_text:
@@ -220,22 +244,27 @@ async def create_note(payload: NoteCreate):
     if not full_text.strip():
         raise HTTPException(400, "Empty note: provide content or image")
 
-    ai = await classify_note(full_text)
+    # Only split when no image attached. With an image, the document = one note.
+    items = await classify_note(full_text, allow_split=not has_image)
 
-    note = Note(
-        content=payload.content or "",
-        ocr_text=ocr_text,
-        image_base64=payload.image_base64,
-        image_mime=payload.image_mime,
-        title=ai["title"],
-        summary=ai["summary"],
-        categories=ai["categories"],
-        urgent=ai["urgent"],
-        reminder_date=ai["reminder_date"],
-        amount=ai["amount"],
-    )
-    await db.notes.insert_one(note.model_dump())
-    return note
+    created: list[Note] = []
+    for idx, ai in enumerate(items):
+        note = Note(
+            content=ai["content"] if not has_image else (payload.content or ""),
+            ocr_text=ocr_text if idx == 0 else None,  # OCR only on first note
+            image_base64=payload.image_base64 if idx == 0 else None,
+            image_mime=payload.image_mime if idx == 0 else None,
+            title=ai["title"],
+            summary=ai["summary"],
+            categories=ai["categories"],
+            urgent=ai["urgent"],
+            reminder_date=ai["reminder_date"],
+            amount=ai["amount"],
+        )
+        await db.notes.insert_one(note.model_dump())
+        created.append(note)
+
+    return created
 
 
 @api_router.get("/notes", response_model=List[Note])
