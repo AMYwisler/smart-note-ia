@@ -1,0 +1,50 @@
+{
+  "summary": "Smart Notes IA tested end-to-end. Backend: 19/19 pytest tests pass (health, 13 categories, AI classification incl. Véhicules+Finances+urgent for 'Payer assurance camion avant jeudi', heuristic 'amende impôts urgent', no-urgency 'Acheter du lait', empty payload 400, list/filter/search/category/single GET, status lifecycle todo→in_progress→done, urgent toggle, DELETE→404, dashboard shape, OCR with real-content JPEG returns ocr_text). Frontend: dashboard renders, FAB opens QuickCaptureSheet, note creation flow works, sheet auto-closes, notes-screen filter chips (urgent/status/cat) tap correctly, note detail status segmented control + toggle-urgent work, search-screen filters live (8 results for 'camion'). One web-only regression: delete-btn on note detail does NOT delete because Alert.alert with confirm/cancel buttons does not fire onPress on react-native-web.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "app/note/[id].tsx onDelete",
+        "issue": "Delete button uses Alert.alert with two-button confirm. On react-native-web, multi-button Alert.alert does NOT invoke onPress callbacks (known RNW limitation). Result: tapping delete-btn shows nothing on web and the note is never deleted. Works on Android.",
+        "testID": "delete-btn",
+        "priority": "HIGH"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {
+        "component": "Multiple files",
+        "issue": "Console emits non-blocking deprecation warnings: 'shadow* style props are deprecated. Use boxShadow' and 'props.pointerEvents is deprecated. Use style.pointerEvents'. Cosmetic only."
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_smart_notes.py",
+    "/app/backend/tests/conftest.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Fix delete on web: in app/note/[id].tsx onDelete, branch on Platform.OS — use window.confirm() on web or a custom Modal-based confirmation dialog. Example: if (Platform.OS === 'web') { if (window.confirm('Supprimer la note ?')) { await deleteNote(note.id); router.back(); } } else { Alert.alert(...) }",
+    "Optional: replace deprecated style props (shadow* → boxShadow on web; props.pointerEvents → style.pointerEvents) to silence warnings."
+  ],
+  "critical_code_review_comments": [
+    "server.py /api/notes empty-payload check happens AFTER OCR call when image_base64 is empty string '': harmless (passes through), but the fast-fail 400 only triggers when both content and OCR result are empty. Fine.",
+    "/api/dashboard returns Note(**n).model_dump() lists which is correct (no _id leakage).",
+    "classify_note JSON parsing strips ```json fences correctly; also has heuristic fallback OR'd with model output — robust.",
+    "Frontend QuickCaptureSheet correctly handles empty input alert and AI loading spinner."
+  ],
+  "updated_files": [
+    "/app/backend/tests/conftest.py (created)",
+    "/app/backend/tests/test_smart_notes.py (created)"
+  ],
+  "success_rate": {"backend": "100% (19/19)", "frontend": "~92% (delete fails on web)"},
+  "seed_data_creation": "A handful of test notes were created via the API during pytest runs and via the UI ('Test note frontend playwright'). Class-scoped cleanup deletes most; a few may persist (used to validate dashboard/list).",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend public URL is https://smart-capture-ai-2.preview.emergentagent.com (taken from /app/frontend/.env EXPO_PUBLIC_BACKEND_URL — note: the URL in the original review_request was stale). Reuse /app/backend/tests/test_smart_notes.py for regression. For frontend testing of buttons that may render below mobile viewport (390x844), use element.dispatch_event('click') instead of page.click() because RN-web layouts often place CTAs below the fold even though they are tappable on actual devices. The delete-btn issue is specifically the Alert.alert RNW limitation — verify the fix by tapping delete-btn and confirming via window.confirm dialog handler.",
+  "rca_of_issue": "Delete on web fails because react-native-web's Alert.alert implementation falls back to window.alert (single-button), and its multi-button signature does not invoke the onPress handlers. Reproduction: open any note detail in the web preview, tap the trash icon → no confirmation appears and the note is not deleted. Mitigation: branch with Platform.OS === 'web' and use window.confirm(), OR render a custom Modal-based confirmation dialog that works cross-platform."
+}
