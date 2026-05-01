@@ -8,6 +8,7 @@ import {
   Image,
   ActivityIndicator,
   Alert,
+  Platform,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -67,23 +68,33 @@ export default function NoteDetailScreen() {
 
   const onDelete = () => {
     if (!note) return;
+    const doDelete = async () => {
+      try {
+        await deleteNote(note.id);
+        router.back();
+      } catch (e: any) {
+        if (Platform.OS === "web") {
+          window.alert(`Erreur: ${e.message}`);
+        } else {
+          Alert.alert("Erreur", e.message);
+        }
+      }
+    };
+
+    if (Platform.OS === "web") {
+      // Alert.alert callbacks don't fire on react-native-web; use window.confirm
+      if (window.confirm("Supprimer la note ? Cette action est irréversible.")) {
+        doDelete();
+      }
+      return;
+    }
+
     Alert.alert(
       "Supprimer la note ?",
       "Cette action est irréversible.",
       [
         { text: "Annuler", style: "cancel" },
-        {
-          text: "Supprimer",
-          style: "destructive",
-          onPress: async () => {
-            try {
-              await deleteNote(note.id);
-              router.back();
-            } catch (e: any) {
-              Alert.alert("Erreur", e.message);
-            }
-          },
-        },
+        { text: "Supprimer", style: "destructive", onPress: doDelete },
       ]
     );
   };
