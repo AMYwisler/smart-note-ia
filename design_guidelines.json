@@ -1,0 +1,128 @@
+{
+  "project_name": "Smart Notes IA",
+  "domain": "Productivity / Utility App",
+  "theme": "LIGHT",
+  "archetype": "4 (Swiss & High-Contrast)",
+  "design_philosophy": "Minimalist, block-based system inspired by Notion and Todoist. Designed for rapid capture, frictionless AI organization, and absolute clarity. Function dictates form.",
+  "colors": {
+    "background_main": "#FFFFFF",
+    "background_secondary": "#FAFAFA",
+    "surface": "#FFFFFF",
+    "text_primary": "#0A0A0A",
+    "text_secondary": "#6B7280",
+    "text_tertiary": "#9CA3AF",
+    "border_light": "#E5E7EB",
+    "border_focus": "#0A0A0A",
+    "accent_primary": "#0A0A0A",
+    "accent_urgent": "#FF3B30",
+    "urgent_background": "#FEF2F2",
+    "urgent_border": "#FECACA",
+    "status": {
+      "todo": "#F3F4F6",
+      "todo_text": "#4B5563",
+      "in_progress": "#DBEAFE",
+      "in_progress_text": "#1D4ED8",
+      "done": "#D1FAE5",
+      "done_text": "#047857"
+    },
+    "categories": {
+      "Devis": "#E0F2FE",
+      "Finances": "#DCFCE7",
+      "Juridique": "#F3E8FF",
+      "Famille": "#FFE4E6",
+      "Véhicules": "#FEF3C7",
+      "Travaux": "#FFEDD5",
+      "Clients": "#DBEAFE",
+      "Fournisseurs": "#E0E7FF",
+      "Banque": "#CCFBF1",
+      "Administratif": "#F1F5F9",
+      "Santé": "#FCE7F3",
+      "Personnel": "#ECFCCB",
+      "Urgent": "#FEE2E2"
+    }
+  },
+  "typography": {
+    "heading_font": "Manrope",
+    "body_font": "Work Sans",
+    "sizes": {
+      "h1": "text-3xl font-black tracking-tight",
+      "h2": "text-2xl font-bold tracking-tight",
+      "h3": "text-xl font-semibold",
+      "h4": "text-lg font-medium",
+      "body": "text-base leading-relaxed",
+      "caption": "text-sm text-gray-500",
+      "badge": "text-xs tracking-widest uppercase font-bold"
+    }
+  },
+  "spacing_and_layout": {
+    "container_padding": "p-4 md:p-6",
+    "section_gap": "gap-8",
+    "item_gap": "gap-4",
+    "border_radius": {
+      "sm": "rounded-md",
+      "md": "rounded-xl",
+      "lg": "rounded-2xl",
+      "full": "rounded-full"
+    }
+  },
+  "components": {
+    "button_primary": "bg-black text-white rounded-2xl py-4 px-6 font-bold flex-row justify-center items-center active:opacity-80",
+    "button_secondary": "bg-gray-100 text-black rounded-2xl py-4 px-6 font-semibold flex-row justify-center items-center active:bg-gray-200",
+    "fab_quick_add": "absolute bottom-6 right-6 bg-black rounded-full w-16 h-16 items-center justify-center shadow-lg active:scale-95",
+    "card": "bg-white border border-gray-100 rounded-2xl p-4 shadow-sm",
+    "card_urgent": "bg-red-50 border border-red-200 rounded-2xl p-4 shadow-sm",
+    "input_field": "bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-base text-black focus:border-black focus:bg-white",
+    "badge_urgent": "bg-red-500 rounded-md px-2 py-1 flex-row items-center",
+    "badge_urgent_text": "text-white text-xs font-bold uppercase tracking-widest"
+  },
+  "interactions_and_motion": {
+    "active_states": "All Pressable/TouchableOpacity elements must have visual feedback (opacity 0.8 on active, or scale down to 0.98).",
+    "haptics": "Use haptic feedback for significant actions: marking task done, deleting, confirming photo.",
+    "transitions": "Use bottom sheets for secondary actions (filters, photo picker). Use LayoutAnimation for list items entering/leaving."
+  },
+  "assets_and_icons": {
+    "library": "@expo/vector-icons",
+    "icon_set": "Ionicons",
+    "usage": "Use outlined styles (e.g., 'camera-outline', 'document-text-outline') for inactive/default, filled for active.",
+    "no_emojis": true
+  },
+  "testing": {
+    "test_id_rule": "Every interactive component (Pressable, TouchableOpacity, TextInput, Button) MUST include a 'testID' (React Native) or 'data-testid' prop using kebab-case role-based naming (e.g., 'add-note-button', 'search-input', 'urgent-tab')."
+  },
+  "screens": {
+    "Dashboard": {
+      "sections": [
+        "Header: Greeting + Intelligent Search bar.",
+        "Urgences du jour: Horizontal scroll of urgent cards (Red badges, distinct UI).",
+        "Rappels à venir: Vertical list, smart dates highlighted.",
+        "Tâches (À faire / En retard): Quick checklist UI.",
+        "Quick Actions: Floating Action Button (FAB) for instant note/camera."
+      ]
+    },
+    "QuickCapture_BottomSheet": {
+      "sections": [
+        "Auto-focused multiline TextInput.",
+        "Action row: Camera Icon (Photo), Gallery Icon, Microphone.",
+        "Submit Button: 'Laisser l'IA organiser'."
+      ]
+    },
+    "NoteDetail": {
+      "sections": [
+        "Top: AI assigned Category Badge + Urgent toggle.",
+        "Body: Extracted OCR text / structured data (Dates, amounts, entities).",
+        "Media: Thumbnail of captured document.",
+        "Task Management: Segmented control for (À faire / En cours / Fait)."
+      ]
+    }
+  },
+  "instructions_to_main_agent": [
+    "Strictly use React Native components (View, Text, ScrollView, Pressable, TextInput) compatible with Expo.",
+    "Avoid web HTML elements like div, span, or button.",
+    "Implement styling using React Native StyleSheet or NativeWind/Tailwind. Do not use generic CSS.",
+    "Ensure UI is thumb-friendly on mobile with large touch targets (minimum 44x44 points).",
+    "Integrate the URGENT visual language (Red #FF3B30) cleanly without overwhelming the user.",
+    "All text must be legible against its background following APCA/WCAG standards.",
+    "Make sure every interactive element has a valid 'testID' property for automation.",
+    "Assume French for all UI copy (e.g., 'Rechercher', 'Nouvelle note', 'Enregistrer')."
+  ]
+}
