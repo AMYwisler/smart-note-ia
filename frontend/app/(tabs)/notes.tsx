@@ -25,7 +25,8 @@ export default function NotesScreen() {
   const [notes, setNotes] = useState<Note[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>("active");
+  const [error, setError] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [categoryFilter, setCategoryFilter] = useState<string | null>(null);
   const [urgentOnly, setUrgentOnly] = useState(false);
   const [sort, setSort] = useState<SortKey>("recent");
@@ -33,6 +34,7 @@ export default function NotesScreen() {
   const [counts, setCounts] = useState<Record<string, number>>({});
 
   const fetchData = useCallback(async () => {
+    setError(null);
     try {
       const params: any = { sort };
       if (statusFilter !== "all") params.status = statusFilter;
@@ -40,8 +42,10 @@ export default function NotesScreen() {
       if (urgentOnly) params.urgent = true;
       const data = await listNotes(params);
       setNotes(data);
-    } catch (e) {
+    } catch (e: any) {
       console.warn("notes error", e);
+      setError(e?.message || "Impossible de charger les notes");
+      setNotes([]);
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -70,12 +74,21 @@ export default function NotesScreen() {
     fetchCounts();
   };
 
+  const resetFilters = () => {
+    setStatusFilter("all");
+    setCategoryFilter(null);
+    setUrgentOnly(false);
+  };
+
+  const hasActiveFilters =
+    statusFilter !== "all" || categoryFilter !== null || urgentOnly;
+
   const statusOptions: { key: StatusFilter; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
+    { key: "all",         label: "Tout",        icon: "albums-outline" },
     { key: "active",      label: "Actives",     icon: "flash-outline" },
     { key: "todo",        label: "À faire",     icon: "ellipse-outline" },
     { key: "in_progress", label: "En cours",    icon: "play-circle-outline" },
     { key: "done",        label: "Archive",     icon: "archive-outline" },
-    { key: "all",         label: "Tout",        icon: "albums-outline" },
   ];
 
   // Group by primary category when sort = "category"
@@ -159,6 +172,17 @@ export default function NotesScreen() {
       {loading ? (
         <View style={styles.loading}>
           <ActivityIndicator size="large" color={COLORS.black} />
+          <Text style={styles.loadingText}>Chargement…</Text>
+        </View>
+      ) : error ? (
+        <View style={styles.errorBox}>
+          <Ionicons name="cloud-offline-outline" size={42} color={COLORS.urgent} />
+          <Text style={styles.errorTitle}>Connexion impossible</Text>
+          <Text style={styles.errorText}>{error}</Text>
+          <Pressable style={styles.retryBtn} onPress={onRefresh} testID="retry-fetch-notes">
+            <Ionicons name="refresh" size={16} color="#fff" />
+            <Text style={styles.retryText}>Réessayer</Text>
+          </Pressable>
         </View>
       ) : groupedSections ? (
         // Category-grouped view
@@ -173,7 +197,7 @@ export default function NotesScreen() {
           )}
           contentContainerStyle={styles.listContent}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
-          ListEmptyComponent={<EmptyState />}
+          ListEmptyComponent={<EmptyState hasFilters={hasActiveFilters} onReset={resetFilters} />}
         />
       ) : (
         <FlatList
@@ -182,7 +206,7 @@ export default function NotesScreen() {
           renderItem={({ item }) => <NoteCard note={item} />}
           contentContainerStyle={styles.listContent}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
-          ListEmptyComponent={<EmptyState />}
+          ListEmptyComponent={<EmptyState hasFilters={hasActiveFilters} onReset={resetFilters} />}
         />
       )}
 
@@ -203,12 +227,24 @@ export default function NotesScreen() {
   );
 }
 
-function EmptyState() {
+function EmptyState({ hasFilters, onReset }: { hasFilters: boolean; onReset: () => void }) {
   return (
     <View style={styles.empty}>
       <Ionicons name="document-text-outline" size={48} color={COLORS.textTertiary} />
-      <Text style={styles.emptyTitle}>Aucune note</Text>
-      <Text style={styles.emptyText}>Appuyez sur + pour créer votre première note</Text>
+      <Text style={styles.emptyTitle}>
+        {hasFilters ? "Aucune note ne correspond" : "Aucune note"}
+      </Text>
+      <Text style={styles.emptyText}>
+        {hasFilters
+          ? "Aucune note avec les filtres sélectionnés."
+          : "Appuyez sur + pour créer votre première note"}
+      </Text>
+      {hasFilters && (
+        <Pressable style={styles.resetBtn} onPress={onReset} testID="reset-filters">
+          <Ionicons name="refresh" size={14} color={COLORS.text} />
+          <Text style={styles.resetText}>Réinitialiser les filtres</Text>
+        </Pressable>
+      )}
     </View>
   );
 }
@@ -265,10 +301,46 @@ const styles = StyleSheet.create({
 
   listContent: { paddingHorizontal: 20, paddingBottom: 100, paddingTop: 8 },
 
-  loading: { flex: 1, alignItems: "center", justifyContent: "center" },
+  loading: { flex: 1, alignItems: "center", justifyContent: "center", gap: 10 },
+  loadingText: { fontSize: 13, color: COLORS.textSecondary },
   empty: { alignItems: "center", paddingVertical: 60, gap: 8 },
   emptyTitle: { fontSize: 17, fontWeight: "700", color: COLORS.text },
   emptyText: { fontSize: 13, color: COLORS.textSecondary, textAlign: "center" },
+  resetBtn: {
+    marginTop: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    backgroundColor: COLORS.bg2,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 999,
+  },
+  resetText: { fontSize: 13, fontWeight: "700", color: COLORS.text },
+
+  errorBox: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 30,
+    gap: 8,
+  },
+  errorTitle: { fontSize: 17, fontWeight: "800", color: COLORS.text, marginTop: 8 },
+  errorText: { fontSize: 13, color: COLORS.textSecondary, textAlign: "center" },
+  retryBtn: {
+    marginTop: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+    backgroundColor: COLORS.black,
+    borderRadius: 999,
+  },
+  retryText: { color: "#fff", fontWeight: "800", fontSize: 13 },
+
   fab: {
     position: "absolute",
     bottom: 24,

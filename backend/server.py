@@ -153,6 +153,34 @@ def _fallback_item(text: str) -> dict:
     }
 
 
+# Strict JSON schema for Gemini structured output
+NOTES_RESPONSE_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "items": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "content": {"type": "STRING"},
+                    "title": {"type": "STRING"},
+                    "summary": {"type": "STRING"},
+                    "categories": {
+                        "type": "ARRAY",
+                        "items": {"type": "STRING"},
+                    },
+                    "urgent": {"type": "BOOLEAN"},
+                    "reminder_date": {"type": "STRING", "nullable": True},
+                    "amount": {"type": "NUMBER", "nullable": True},
+                },
+                "required": ["content", "title", "summary", "categories", "urgent"],
+            },
+        }
+    },
+    "required": ["items"],
+}
+
+
 async def classify_note(text: str, allow_split: bool = True) -> list[dict]:
     """
     Use Gemini to:
@@ -163,31 +191,42 @@ async def classify_note(text: str, allow_split: bool = True) -> list[dict]:
     if not gemini_client or not text.strip():
         return [_fallback_item(text)]
 
-    today = datetime.now(timezone.utc).date().isoformat()
-    split_instruction = (
-        "L'utilisateur peut écrire PLUSIEURS notes/tâches/idées en vrac dans le même bloc. "
-        "Tu dois IDENTIFIER chaque idée distincte et la séparer en éléments. "
-        "Une idée distincte = un sujet différent, une tâche différente, ou une catégorie clairement différente. "
-        "Si tout le texte parle du MÊME sujet/tâche, retourne UN SEUL élément. "
-        "Ne découpe PAS artificiellement: regroupe les phrases qui parlent du même sujet. "
-    ) if allow_split else (
-        "Considère TOUT le texte comme UNE SEULE note. Retourne un seul élément. "
-    )
+    today = datetime.now(timezone.utc).date()
+    today_iso = today.isoformat()
+    weekday_fr = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"][today.weekday()]
+
+    if allow_split:
+        split_instruction = (
+            "RÈGLE DE DÉCOUPAGE (TRÈS IMPORTANTE) :\n"
+            "- L'utilisateur écrit souvent PLUSIEURS notes/tâches/idées en vrac dans un seul bloc.\n"
+            "- Tu DOIS identifier CHAQUE idée, sujet ou tâche distinct(e) et créer UN ÉLÉMENT SÉPARÉ pour chacun(e).\n"
+            "- Une nouvelle phrase qui parle d'un AUTRE sujet, d'une AUTRE personne, d'une AUTRE catégorie, d'une AUTRE échéance "
+            "= un nouvel élément.\n"
+            "- Exemple : 'rappel rdv médecin mardi. payer la facture EDF avant vendredi. acheter cadeau anniversaire papa' "
+            "= 3 éléments distincts (Santé / Finances / Famille).\n"
+            "- Si TOUT le texte parle vraiment du MÊME sujet, alors UN SEUL élément.\n"
+            "- Ne fusionne JAMAIS deux sujets différents en un seul élément, même s'ils sont collés.\n"
+        )
+    else:
+        split_instruction = "Considère TOUT le texte comme UNE SEULE note. Retourne un seul élément."
 
     system = (
-        "Tu es une IA qui organise des notes en français. "
-        f"Aujourd'hui = {today}. "
-        f"{split_instruction}"
-        f"Catégories possibles: {', '.join(CATEGORIES)}. "
-        "Réponds UNIQUEMENT avec un JSON strict (pas de markdown). "
-        "Format: {\"items\": [ ... ]} où chaque item a: "
-        "content (string: le texte original concernant cette note, en gardant les phrases d'origine), "
-        "title (string court 3-8 mots), "
-        "summary (string 1 phrase courte), "
-        "categories (array de 1 à 3 catégories de la liste), "
-        "urgent (bool, true si mots: amende, avocat, tribunal, urgent, demain, échéance, impôts, retard, paiement immédiat, OU délai très court), "
-        "reminder_date (string ISO YYYY-MM-DD ou null. Détecte: 'demain', 'lundi prochain', 'dans 3 jours', 'vendredi', 'avant jeudi', dates explicites), "
-        "amount (number en euros ou null)."
+        "Tu es une IA qui organise des notes en français pour un particulier (gestion familiale, administrative, pro).\n"
+        f"Date d'aujourd'hui : {today_iso} ({weekday_fr}).\n"
+        f"Catégories autorisées (utilise UNIQUEMENT ces valeurs exactes) : {', '.join(CATEGORIES)}.\n\n"
+        f"{split_instruction}\n"
+        "Pour CHAQUE élément, remplis :\n"
+        "- content : le texte original concernant cette note (garde les phrases d'origine de l'utilisateur).\n"
+        "- title : titre court 3-8 mots, clair et descriptif.\n"
+        "- summary : résumé en 1 phrase courte.\n"
+        "- categories : 1 à 3 catégories de la liste autorisée. Si rien ne correspond, mets ['Personnel'].\n"
+        "- urgent : true si présence de 'amende', 'avocat', 'tribunal', 'urgent', 'demain', 'échéance', 'impôts', 'retard', "
+        "'paiement immédiat', OU délai très court (≤ 2 jours).\n"
+        "- reminder_date : DÉTECTE TOUTE DATE OU ÉCHÉANCE et convertis-la en ISO YYYY-MM-DD. "
+        "Exemples : 'demain' → date de demain, 'lundi prochain', 'dans 3 jours', 'vendredi', 'avant jeudi', "
+        "'le 15 mars', '20/04/2026', 'la semaine prochaine', 'fin du mois'. "
+        "Si AUCUNE date n'est détectée, mets null. Tu DOIS détecter les dates implicites.\n"
+        "- amount : montant en euros si mentionné (ex: '450€', '1200 euros'), sinon null.\n"
     )
 
     try:
@@ -197,7 +236,8 @@ async def classify_note(text: str, allow_split: bool = True) -> list[dict]:
             config=types.GenerateContentConfig(
                 system_instruction=system,
                 response_mime_type="application/json",
-                temperature=0.3,
+                response_schema=NOTES_RESPONSE_SCHEMA,
+                temperature=0.2,
             ),
         )
         raw = (response.text or "").strip()
@@ -219,13 +259,17 @@ async def classify_note(text: str, allow_split: bool = True) -> list[dict]:
             if not cats:
                 cats = ["Personnel"]
             urgent_flag = bool(item.get("urgent", False)) or _heuristic_urgent(content)
+            reminder = item.get("reminder_date")
+            # Normalise reminder_date: only keep if it looks like ISO YYYY-MM-DD
+            if reminder and not re.match(r"^\d{4}-\d{2}-\d{2}$", str(reminder)):
+                reminder = None
             results.append({
                 "content": content,
                 "title": str(item.get("title") or content[:60] or "Note").strip(),
                 "summary": str(item.get("summary") or content[:200]).strip(),
                 "categories": cats,
                 "urgent": urgent_flag,
-                "reminder_date": item.get("reminder_date"),
+                "reminder_date": reminder,
                 "amount": item.get("amount"),
             })
 
