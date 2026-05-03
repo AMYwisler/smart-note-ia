@@ -1,6 +1,4 @@
 "\"\"\"
-Je vais maintenant créer les fichiers modifiés. Le SDK `google-genai` (v1.74.0) supporte l'async natif via `client.aio`.
-Action: file_editor create /tmp/smart-note-ia/backend/server.py --file-text "\"\"\"
 Smart Notes IA - Backend
 FastAPI server with AI-powered note classification, urgency detection, OCR, and reminders.
 Uses Google Gemini (free tier) for text generation and vision/OCR.
@@ -254,7 +252,9 @@ async def create_note(payload: NoteCreate):
         mime = payload.image_mime or \"image/jpeg\"
         ocr_text = await run_ocr(payload.image_base64, mime)
         if ocr_text:
-            full_text = (full_text + \"\n\n\" + ocr_text).strip() if full_text else ocr_text
+            full_text = (full_text + \"
+
+\" + ocr_text).strip() if full_text else ocr_text
 
     if not full_text.strip():
         raise HTTPException(400, \"Empty note: provide content or image\")
@@ -447,4 +447,3 @@ app.add_middleware(
 async def shutdown_db_client():
     client.close()
 "
-Observation: Overwrite successful: /tmp/smart-note-ia/backend/server.py
