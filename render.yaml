@@ -1,4 +1,4 @@
-"services:
+services:
   - type: web
     name: smart-notes-ia-backend
     runtime: python
@@ -14,4 +14,3 @@
         sync: false
       - key: GEMINI_MODEL
         value: gemini-2.0-flash
-"

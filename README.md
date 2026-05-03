@@ -1,4 +1,4 @@
-"# Smart Notes IA
+# Smart Notes IA
 
 A FastAPI + React Native (Expo) application that uses Google Gemini (free tier) to:
 - OCR images (invoices, quotes, receipts)
@@ -50,4 +50,3 @@ cd frontend
 yarn install
 yarn start
 ```
-"
