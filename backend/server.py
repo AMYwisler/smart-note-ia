@@ -1,3 +1,4 @@
+"\"\"\"
 Je vais maintenant créer les fichiers modifiés. Le SDK `google-genai` (v1.74.0) supporte l'async natif via `client.aio`.
 Action: file_editor create /tmp/smart-note-ia/backend/server.py --file-text "\"\"\"
 Smart Notes IA - Backend
