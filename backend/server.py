@@ -153,6 +153,45 @@ def _fallback_item(text: str) -> dict:
     }
 
 
+_LIST_MARKER_RE = re.compile(r"^\s*(?:[-*•·–—]+|\d+[\.\)])\s+")
+
+
+def _detect_list_lines(text: str) -> Optional[List[str]]:
+    """
+    If the user input looks like a bullet/line-separated list (typical "in vrac" capture),
+    return a clean list of one item per line. Otherwise return None (so we fall back to
+    prose-level AI splitting).
+
+    Heuristic:
+    - Split on newlines, drop blanks.
+    - At least 3 non-empty lines.
+    - Either >= 40% of the lines start with a bullet marker (-, *, •, 1., etc.),
+      OR average line length is short (< 110 chars) and most lines are < 200 chars.
+    """
+    lines_raw = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if len(lines_raw) < 3:
+        return None
+
+    bullet_count = sum(1 for ln in lines_raw if _LIST_MARKER_RE.match(ln))
+    bullet_ratio = bullet_count / len(lines_raw)
+    avg_len = sum(len(ln) for ln in lines_raw) / len(lines_raw)
+    short_lines_ratio = sum(1 for ln in lines_raw if len(ln) < 200) / len(lines_raw)
+
+    looks_like_list = bullet_ratio >= 0.4 or (avg_len < 110 and short_lines_ratio >= 0.85)
+    if not looks_like_list:
+        return None
+
+    cleaned = []
+    for ln in lines_raw:
+        # Remove leading bullet/marker and surrounding whitespace
+        ln = _LIST_MARKER_RE.sub("", ln).strip()
+        # Skip pure header words like "TODO" of < 4 chars
+        if not ln or len(ln) < 2:
+            continue
+        cleaned.append(ln)
+    return cleaned if len(cleaned) >= 3 else None
+
+
 # Strict JSON schema for Gemini structured output
 NOTES_RESPONSE_SCHEMA = {
     "type": "OBJECT",
@@ -195,20 +234,42 @@ async def classify_note(text: str, allow_split: bool = True) -> list[dict]:
     today_iso = today.isoformat()
     weekday_fr = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"][today.weekday()]
 
-    if allow_split:
+    # Detect bullet/line-separated list: each line MUST become its own note
+    list_lines = _detect_list_lines(text) if allow_split else None
+
+    if list_lines:
+        numbered = "\n".join(f"{i+1}. {ln}" for i, ln in enumerate(list_lines))
+        user_payload = (
+            f"Voici une LISTE de {len(list_lines)} éléments déjà séparés ligne par ligne. "
+            f"Tu DOIS retourner EXACTEMENT {len(list_lines)} éléments dans 'items', "
+            f"un par ligne, DANS LE MÊME ORDRE. NE FUSIONNE JAMAIS deux lignes.\n\n"
+            f"LISTE :\n{numbered}"
+        )
         split_instruction = (
-            "RÈGLE DE DÉCOUPAGE (TRÈS IMPORTANTE) :\n"
-            "- L'utilisateur écrit souvent PLUSIEURS notes/tâches/idées en vrac dans un seul bloc.\n"
-            "- Tu DOIS identifier CHAQUE idée, sujet ou tâche distinct(e) et créer UN ÉLÉMENT SÉPARÉ pour chacun(e).\n"
-            "- Une nouvelle phrase qui parle d'un AUTRE sujet, d'une AUTRE personne, d'une AUTRE catégorie, d'une AUTRE échéance "
-            "= un nouvel élément.\n"
-            "- Exemple : 'rappel rdv médecin mardi. payer la facture EDF avant vendredi. acheter cadeau anniversaire papa' "
-            "= 3 éléments distincts (Santé / Finances / Famille).\n"
-            "- Si TOUT le texte parle vraiment du MÊME sujet, alors UN SEUL élément.\n"
-            "- Ne fusionne JAMAIS deux sujets différents en un seul élément, même s'ils sont collés.\n"
+            "MODE LISTE : L'utilisateur a saisi une LISTE. Chaque ligne numérotée ci-dessous est UNE NOTE DISTINCTE.\n"
+            f"- Tu DOIS retourner EXACTEMENT {len(list_lines)} éléments dans 'items', dans le même ordre que la liste.\n"
+            "- INTERDICTION ABSOLUE de fusionner plusieurs lignes en un seul élément, même si elles partagent un mot (ex: 'Devis').\n"
+            "- INTERDICTION ABSOLUE d'inventer des éléments supplémentaires.\n"
+            "- Pour chaque ligne, fais un titre clair, une catégorie pertinente, et détecte les dates/montants éventuels.\n"
         )
     else:
-        split_instruction = "Considère TOUT le texte comme UNE SEULE note. Retourne un seul élément."
+        user_payload = text
+        if allow_split:
+            split_instruction = (
+                "RÈGLE DE DÉCOUPAGE (TRÈS IMPORTANTE) :\n"
+                "- L'utilisateur écrit souvent PLUSIEURS notes/tâches/idées en vrac dans un seul bloc.\n"
+                "- Tu DOIS identifier CHAQUE idée, sujet ou tâche distinct(e) et créer UN ÉLÉMENT SÉPARÉ pour chacun(e).\n"
+                "- Une nouvelle phrase qui parle d'un AUTRE sujet, d'une AUTRE personne, d'une AUTRE catégorie, d'une AUTRE échéance "
+                "= un nouvel élément.\n"
+                "- Exemple 1 : 'rappel rdv médecin mardi. payer la facture EDF avant vendredi. acheter cadeau anniversaire papa' "
+                "= 3 éléments distincts (Santé / Finances / Famille).\n"
+                "- Exemple 2 (LISTE) : 'Devis Nadir\\nDevis Tiberghien\\nDevis Rachid' = 3 éléments distincts "
+                "(un par devis, JAMAIS regroupés sous 'Devis divers').\n"
+                "- Si TOUT le texte parle vraiment du MÊME sujet, alors UN SEUL élément.\n"
+                "- Ne fusionne JAMAIS deux sujets différents en un seul élément, même s'ils sont collés.\n"
+            )
+        else:
+            split_instruction = "Considère TOUT le texte comme UNE SEULE note. Retourne un seul élément."
 
     system = (
         "Tu es une IA qui organise des notes en français pour un particulier (gestion familiale, administrative, pro).\n"
@@ -216,28 +277,33 @@ async def classify_note(text: str, allow_split: bool = True) -> list[dict]:
         f"Catégories autorisées (utilise UNIQUEMENT ces valeurs exactes) : {', '.join(CATEGORIES)}.\n\n"
         f"{split_instruction}\n"
         "Pour CHAQUE élément, remplis :\n"
-        "- content : le texte original concernant cette note (garde les phrases d'origine de l'utilisateur).\n"
+        "- content : le texte original concernant cette note (garde les mots de l'utilisateur).\n"
         "- title : titre court 3-8 mots, clair et descriptif.\n"
         "- summary : résumé en 1 phrase courte.\n"
-        "- categories : 1 à 3 catégories de la liste autorisée. Si rien ne correspond, mets ['Personnel'].\n"
+        "- categories : 1 à 3 catégories de la liste autorisée. Si rien ne correspond, mets ['Personnel']. "
+        "Indices : 'Devis ...' → ['Devis'], 'Amende ...' → ['Finances','Urgent'], 'avocat / divorce / tribunal' → ['Juridique'], "
+        "'maman / papa / frère / soeur / hébergement / cadeau' → ['Famille'], 'voiture / moteur / pneus' → ['Véhicules'], "
+        "'arrêt maladie / médecin / dentiste / RDV docteur' → ['Santé'], 'TVA / nationalité / Douane / impôts / formation administrative' → ['Administratif'], "
+        "'banque / virement' → ['Banque'], 'client / contrat client' → ['Clients'], 'fournisseur' → ['Fournisseurs'].\n"
         "- urgent : true si présence de 'amende', 'avocat', 'tribunal', 'urgent', 'demain', 'échéance', 'impôts', 'retard', "
         "'paiement immédiat', OU délai très court (≤ 2 jours).\n"
         "- reminder_date : DÉTECTE TOUTE DATE OU ÉCHÉANCE et convertis-la en ISO YYYY-MM-DD. "
         "Exemples : 'demain' → date de demain, 'lundi prochain', 'dans 3 jours', 'vendredi', 'avant jeudi', "
         "'le 15 mars', '20/04/2026', 'la semaine prochaine', 'fin du mois'. "
-        "Si AUCUNE date n'est détectée, mets null. Tu DOIS détecter les dates implicites.\n"
+        "Si AUCUNE date n'est détectée, mets null.\n"
         "- amount : montant en euros si mentionné (ex: '450€', '1200 euros'), sinon null.\n"
     )
 
     try:
         response = await gemini_client.aio.models.generate_content(
             model=GEMINI_MODEL,
-            contents=[text],
+            contents=[user_payload],
             config=types.GenerateContentConfig(
                 system_instruction=system,
                 response_mime_type="application/json",
                 response_schema=NOTES_RESPONSE_SCHEMA,
-                temperature=0.2,
+                temperature=0.1,
+                max_output_tokens=8192,
             ),
         )
         raw = (response.text or "").strip()
@@ -248,7 +314,30 @@ async def classify_note(text: str, allow_split: bool = True) -> list[dict]:
 
         items_raw = data.get("items") or []
         if not isinstance(items_raw, list) or not items_raw:
+            # If we expected a list and got nothing, fall back to one-note-per-line classification
+            if list_lines:
+                logger.warning("List mode: empty items returned, using fallback per-line.")
+                return [_fallback_item(ln) for ln in list_lines]
             return [_fallback_item(text)]
+
+        # Safety net for list mode: if Gemini still merged items, restore one-per-line
+        if list_lines and len(items_raw) < len(list_lines):
+            logger.warning(
+                "List mode: Gemini returned %d items but %d lines were expected. Falling back to per-line.",
+                len(items_raw), len(list_lines),
+            )
+            items_raw = [
+                {
+                    "content": ln,
+                    "title": ln[:60],
+                    "summary": ln[:200],
+                    "categories": ["Personnel"],
+                    "urgent": _heuristic_urgent(ln),
+                    "reminder_date": None,
+                    "amount": None,
+                }
+                for ln in list_lines
+            ]
 
         results: list[dict] = []
         for item in items_raw:
@@ -276,6 +365,8 @@ async def classify_note(text: str, allow_split: bool = True) -> list[dict]:
         return results or [_fallback_item(text)]
     except Exception as e:
         logger.exception("Classification failed: %s", e)
+        if list_lines:
+            return [_fallback_item(ln) for ln in list_lines]
         return [_fallback_item(text)]
 
 
