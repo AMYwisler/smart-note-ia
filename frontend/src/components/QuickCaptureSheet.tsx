@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   View,
   Text,
@@ -9,9 +9,10 @@ import {
   Image,
   ScrollView,
   Platform,
-  KeyboardAvoidingView,
   ActivityIndicator,
   Alert,
+  Keyboard,
+  KeyboardEvent,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
@@ -29,6 +30,26 @@ export default function QuickCaptureSheet({ visible, onClose, onCreated }: Props
   const [imageBase64, setImageBase64] = useState<string | null>(null);
   const [imageMime, setImageMime] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+
+  // Listen to keyboard events and manually pad the sheet. This works reliably
+  // inside a Modal on Android (KeyboardAvoidingView is unreliable there).
+  useEffect(() => {
+    const showEvent = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
+    const hideEvent = Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
+
+    const onShow = (e: KeyboardEvent) => {
+      setKeyboardHeight(e.endCoordinates?.height || 0);
+    };
+    const onHide = () => setKeyboardHeight(0);
+
+    const s = Keyboard.addListener(showEvent, onShow);
+    const h = Keyboard.addListener(hideEvent, onHide);
+    return () => {
+      s.remove();
+      h.remove();
+    };
+  }, []);
 
   const reset = () => {
     setContent("");
@@ -39,6 +60,7 @@ export default function QuickCaptureSheet({ visible, onClose, onCreated }: Props
 
   const close = () => {
     if (loading) return;
+    Keyboard.dismiss();
     reset();
     onClose();
   };
@@ -96,9 +118,9 @@ export default function QuickCaptureSheet({ visible, onClose, onCreated }: Props
         image_mime: imageMime,
       });
       reset();
+      Keyboard.dismiss();
       onCreated();
       onClose();
-      // Feedback when AI splits into multiple notes
       const n = Array.isArray(created) ? created.length : 1;
       if (n > 1) {
         if (Platform.OS === "web") {
@@ -119,111 +141,121 @@ export default function QuickCaptureSheet({ visible, onClose, onCreated }: Props
       animationType="slide"
       transparent
       onRequestClose={close}
+      statusBarTranslucent
     >
-      <View style={styles.backdrop}>
-        <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : "height"}
-          keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 24}
-          style={styles.keyboardWrap}
+      <Pressable style={styles.backdrop} onPress={close}>
+        <Pressable
+          // Inner pressable stops the backdrop onPress from closing when tapping inside
+          onPress={() => {}}
+          style={[
+            styles.sheet,
+            { paddingBottom: Math.max(keyboardHeight, 28) },
+          ]}
+          testID="quick-capture-sheet"
         >
-          <View style={styles.sheet} testID="quick-capture-sheet">
-            <View style={styles.handle} />
-            <View style={styles.headerRow}>
-              <Text style={styles.title}>Nouvelle note</Text>
-              <Pressable onPress={close} testID="close-quick-capture">
-                <Ionicons name="close" size={26} color={COLORS.text} />
-              </Pressable>
-            </View>
-
-            <ScrollView keyboardShouldPersistTaps="handled" style={{ flexGrow: 0 }}>
-              <TextInput
-                testID="note-content-input"
-                value={content}
-                onChangeText={setContent}
-                placeholder="Écrivez en vrac… L'IA s'occupe du reste."
-                placeholderTextColor={COLORS.textTertiary}
-                multiline
-                autoFocus
-                style={styles.input}
-              />
-
-              {imageBase64 && (
-                <View style={styles.preview}>
-                  <Image
-                    source={{ uri: `data:${imageMime || "image/jpeg"};base64,${imageBase64}` }}
-                    style={styles.previewImg}
-                  />
-                  <Pressable
-                    testID="remove-image"
-                    style={styles.removeImg}
-                    onPress={() => { setImageBase64(null); setImageMime(null); }}
-                  >
-                    <Ionicons name="close" size={18} color="#fff" />
-                  </Pressable>
-                </View>
-              )}
-            </ScrollView>
-
-            <View style={styles.actionsRow}>
-              <Pressable
-                testID="capture-camera"
-                onPress={() => pickImage(true)}
-                style={styles.iconBtn}
-                disabled={loading}
-              >
-                <Ionicons name="camera-outline" size={22} color={COLORS.text} />
-                <Text style={styles.iconBtnText}>Photo</Text>
-              </Pressable>
-              <Pressable
-                testID="capture-gallery"
-                onPress={() => pickImage(false)}
-                style={styles.iconBtn}
-                disabled={loading}
-              >
-                <Ionicons name="images-outline" size={22} color={COLORS.text} />
-                <Text style={styles.iconBtnText}>Galerie</Text>
-              </Pressable>
-            </View>
-
-            <Pressable
-              testID="submit-note"
-              onPress={submit}
-              disabled={loading}
-              style={({ pressed }) => [
-                styles.submit,
-                pressed && { opacity: 0.85 },
-                loading && { opacity: 0.7 },
-              ]}
-            >
-              {loading ? (
-                <>
-                  <ActivityIndicator color="#fff" />
-                  <Text style={styles.submitText}>L'IA organise…</Text>
-                </>
-              ) : (
-                <>
-                  <Ionicons name="sparkles" size={18} color="#fff" />
-                  <Text style={styles.submitText}>Laisser l'IA organiser</Text>
-                </>
-              )}
+          <View style={styles.handle} />
+          <View style={styles.headerRow}>
+            <Text style={styles.title}>Nouvelle note</Text>
+            <Pressable onPress={close} testID="close-quick-capture">
+              <Ionicons name="close" size={26} color={COLORS.text} />
             </Pressable>
           </View>
-        </KeyboardAvoidingView>
-      </View>
+
+          <ScrollView
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+            style={{ flexGrow: 0 }}
+            contentContainerStyle={{ paddingBottom: 4 }}
+          >
+            <TextInput
+              testID="note-content-input"
+              value={content}
+              onChangeText={setContent}
+              placeholder="Écrivez en vrac… L'IA s'occupe du reste."
+              placeholderTextColor={COLORS.textTertiary}
+              multiline
+              autoFocus
+              style={styles.input}
+            />
+
+            {imageBase64 && (
+              <View style={styles.preview}>
+                <Image
+                  source={{ uri: `data:${imageMime || "image/jpeg"};base64,${imageBase64}` }}
+                  style={styles.previewImg}
+                />
+                <Pressable
+                  testID="remove-image"
+                  style={styles.removeImg}
+                  onPress={() => { setImageBase64(null); setImageMime(null); }}
+                >
+                  <Ionicons name="close" size={18} color="#fff" />
+                </Pressable>
+              </View>
+            )}
+          </ScrollView>
+
+          <View style={styles.actionsRow}>
+            <Pressable
+              testID="capture-camera"
+              onPress={() => pickImage(true)}
+              style={styles.iconBtn}
+              disabled={loading}
+            >
+              <Ionicons name="camera-outline" size={22} color={COLORS.text} />
+              <Text style={styles.iconBtnText}>Photo</Text>
+            </Pressable>
+            <Pressable
+              testID="capture-gallery"
+              onPress={() => pickImage(false)}
+              style={styles.iconBtn}
+              disabled={loading}
+            >
+              <Ionicons name="images-outline" size={22} color={COLORS.text} />
+              <Text style={styles.iconBtnText}>Galerie</Text>
+            </Pressable>
+          </View>
+
+          <Pressable
+            testID="submit-note"
+            onPress={submit}
+            disabled={loading}
+            style={({ pressed }) => [
+              styles.submit,
+              pressed && { opacity: 0.85 },
+              loading && { opacity: 0.7 },
+            ]}
+          >
+            {loading ? (
+              <>
+                <ActivityIndicator color="#fff" />
+                <Text style={styles.submitText}>L'IA organise…</Text>
+              </>
+            ) : (
+              <>
+                <Ionicons name="sparkles" size={18} color="#fff" />
+                <Text style={styles.submitText}>Laisser l'IA organiser</Text>
+              </>
+            )}
+          </Pressable>
+        </Pressable>
+      </Pressable>
     </Modal>
   );
 }
 
 const styles = StyleSheet.create({
-  backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.45)", justifyContent: "flex-end" },
-  keyboardWrap: { width: "100%" },
+  backdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.45)",
+    justifyContent: "flex-end",
+  },
   sheet: {
     backgroundColor: COLORS.bg,
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
     paddingHorizontal: 20,
     paddingTop: 12,
-    paddingBottom: 28,
     maxHeight: "92%",
   },
   handle: {
