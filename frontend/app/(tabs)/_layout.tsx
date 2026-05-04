@@ -7,7 +7,6 @@ import { COLORS } from "@/src/lib/theme";
 
 export default function TabsLayout() {
   const insets = useSafeAreaInsets();
-  // Make sure the tab bar never sits under the system home indicator / nav bar
   const bottomInset = Math.max(insets.bottom, Platform.OS === "android" ? 12 : 0);
 
   return (
@@ -31,11 +30,7 @@ export default function TabsLayout() {
         options={{
           title: "Tableau de bord",
           tabBarIcon: ({ color, focused }) => (
-            <Ionicons
-              name={focused ? "grid" : "grid-outline"}
-              size={22}
-              color={color}
-            />
+            <Ionicons name={focused ? "grid" : "grid-outline"} size={22} color={color} />
           ),
         }}
       />
@@ -44,11 +39,7 @@ export default function TabsLayout() {
         options={{
           title: "Notes",
           tabBarIcon: ({ color, focused }) => (
-            <Ionicons
-              name={focused ? "document-text" : "document-text-outline"}
-              size={22}
-              color={color}
-            />
+            <Ionicons name={focused ? "document-text" : "document-text-outline"} size={22} color={color} />
           ),
         }}
       />
@@ -57,11 +48,16 @@ export default function TabsLayout() {
         options={{
           title: "Recherche",
           tabBarIcon: ({ color, focused }) => (
-            <Ionicons
-              name={focused ? "search" : "search-outline"}
-              size={22}
-              color={color}
-            />
+            <Ionicons name={focused ? "search" : "search-outline"} size={22} color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="settings"
+        options={{
+          title: "Profil",
+          tabBarIcon: ({ color, focused }) => (
+            <Ionicons name={focused ? "person-circle" : "person-circle-outline"} size={24} color={color} />
           ),
         }}
       />

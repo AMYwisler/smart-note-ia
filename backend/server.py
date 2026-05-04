@@ -9,15 +9,19 @@ import logging
 import uuid
 import re
 import base64
+import secrets
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 
-from fastapi import FastAPI, APIRouter, HTTPException
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
+import bcrypt
+import jwt
 
 from google import genai
 from google.genai import types
@@ -28,6 +32,12 @@ load_dotenv(ROOT_DIR / '.env')
 # ----- Config -----
 MONGO_URL = os.environ['MONGO_URL']
 DB_NAME = os.environ['DB_NAME']
+JWT_SECRET = os.environ.get('JWT_SECRET', 'change-me-in-env-64-hex-chars')
+JWT_ALGORITHM = 'HS256'
+JWT_EXPIRES_DAYS = 30  # long-lived mobile token, stored in expo-secure-store
+RESEND_API_KEY = os.environ.get('RESEND_API_KEY', '')
+RESEND_FROM = os.environ.get('RESEND_FROM', 'Smart Notes IA <onboarding@resend.dev>')
+APP_PUBLIC_URL = os.environ.get('APP_PUBLIC_URL', '')  # used in reset email, e.g. https://smart-notes.example.com
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '')
 GEMINI_MODEL = os.environ.get('GEMINI_MODEL', 'gemini-2.0-flash')
 
@@ -143,6 +153,7 @@ class NoteCreate(NoteBase):
 
 class Note(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    user_id: Optional[str] = None  # owner of the note
     content: str = ""
     ocr_text: Optional[str] = None
     image_base64: Optional[str] = None
@@ -167,6 +178,116 @@ class NoteUpdate(BaseModel):
     reminder_date: Optional[str] = None
     categories: Optional[List[str]] = None
     comments: Optional[str] = None
+
+
+# ----- Auth Models -----
+class UserPublic(BaseModel):
+    id: str
+    email: str
+    created_at: str
+
+
+class RegisterPayload(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=6, max_length=128)
+
+
+class LoginPayload(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class ForgotPayload(BaseModel):
+    email: EmailStr
+
+
+class ResetPayload(BaseModel):
+    token: str
+    password: str = Field(min_length=6, max_length=128)
+
+
+class AuthResponse(BaseModel):
+    token: str
+    user: UserPublic
+
+
+# ----- Auth helpers -----
+def _hash_password(password: str) -> str:
+    salt = bcrypt.gensalt()
+    return bcrypt.hashpw(password.encode("utf-8"), salt).decode("utf-8")
+
+
+def _verify_password(plain: str, hashed: str) -> bool:
+    try:
+        return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
+    except Exception:
+        return False
+
+
+def _create_access_token(user_id: str, email: str) -> str:
+    payload = {
+        "sub": user_id,
+        "email": email,
+        "exp": datetime.now(timezone.utc) + timedelta(days=JWT_EXPIRES_DAYS),
+        "type": "access",
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+security = HTTPBearer(auto_error=False)
+
+
+async def get_current_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> dict:
+    if credentials is None or not credentials.credentials:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    token = credentials.credentials
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        if payload.get("type") != "access":
+            raise HTTPException(status_code=401, detail="Invalid token type")
+        user = await db.users.find_one({"id": payload["sub"]}, {"_id": 0, "password_hash": 0})
+        if not user:
+            raise HTTPException(status_code=401, detail="User not found")
+        return user
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+
+async def _send_reset_email(email: str, reset_link: str) -> None:
+    """Send reset email via Resend if RESEND_API_KEY is set, otherwise log the link."""
+    if not RESEND_API_KEY:
+        logger.info("[Password reset] %s → %s", email, reset_link)
+        return
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=10) as client_http:
+            r = await client_http.post(
+                "https://api.resend.com/emails",
+                headers={
+                    "Authorization": f"Bearer {RESEND_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "from": RESEND_FROM,
+                    "to": [email],
+                    "subject": "Réinitialiser votre mot de passe — Smart Notes IA",
+                    "html": (
+                        f"<p>Bonjour,</p>"
+                        f"<p>Vous avez demandé à réinitialiser votre mot de passe.</p>"
+                        f"<p>Cliquez sur ce lien (valable 1h) :</p>"
+                        f'<p><a href="{reset_link}">{reset_link}</a></p>'
+                        f"<p>Si vous n'êtes pas à l'origine de cette demande, ignorez simplement ce message.</p>"
+                    ),
+                },
+            )
+            if r.status_code >= 400:
+                logger.warning("Resend error %s: %s", r.status_code, r.text)
+    except Exception:
+        logger.exception("Resend send failed")
 
 
 # ----- AI Service -----
@@ -472,11 +593,110 @@ async def classify_note(text: str, allow_split: bool = True) -> list[dict]:
 # ----- Routes -----
 @api_router.get("/")
 async def root():
-    return {"message": "Smart Notes IA API", "version": "1.0"}
+    return {"message": "Smart Notes IA API", "version": "2.0"}
+
+
+# ----- Auth Routes -----
+@api_router.post("/auth/register", response_model=AuthResponse)
+async def register(payload: RegisterPayload):
+    email = payload.email.lower().strip()
+    existing = await db.users.find_one({"email": email})
+    if existing:
+        raise HTTPException(status_code=409, detail="Cet email est déjà utilisé")
+
+    user_id = str(uuid.uuid4())
+    user_doc = {
+        "id": user_id,
+        "email": email,
+        "password_hash": _hash_password(payload.password),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.users.insert_one(user_doc)
+
+    # If this is the FIRST user in the system, adopt any orphan notes (legacy data).
+    total_users = await db.users.count_documents({})
+    if total_users == 1:
+        orphan_filter = {"$or": [{"user_id": {"$exists": False}}, {"user_id": None}]}
+        await db.notes.update_many(orphan_filter, {"$set": {"user_id": user_id}})
+
+    token = _create_access_token(user_id, email)
+    return AuthResponse(
+        token=token,
+        user=UserPublic(id=user_id, email=email, created_at=user_doc["created_at"]),
+    )
+
+
+@api_router.post("/auth/login", response_model=AuthResponse)
+async def login(payload: LoginPayload):
+    email = payload.email.lower().strip()
+    user = await db.users.find_one({"email": email})
+    if not user or not _verify_password(payload.password, user.get("password_hash", "")):
+        raise HTTPException(status_code=401, detail="Email ou mot de passe incorrect")
+    token = _create_access_token(user["id"], user["email"])
+    return AuthResponse(
+        token=token,
+        user=UserPublic(id=user["id"], email=user["email"], created_at=user["created_at"]),
+    )
+
+
+@api_router.get("/auth/me", response_model=UserPublic)
+async def me(current_user: dict = Depends(get_current_user)):
+    return UserPublic(
+        id=current_user["id"],
+        email=current_user["email"],
+        created_at=current_user["created_at"],
+    )
+
+
+@api_router.post("/auth/forgot-password")
+async def forgot_password(payload: ForgotPayload, request: Request):
+    email = payload.email.lower().strip()
+    user = await db.users.find_one({"email": email})
+    # Always respond 200 to avoid leaking whether the email exists
+    if user:
+        reset_token = secrets.token_urlsafe(32)
+        expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
+        await db.password_reset_tokens.insert_one({
+            "token": reset_token,
+            "user_id": user["id"],
+            "expires_at": expires_at,
+            "used": False,
+            "created_at": datetime.now(timezone.utc),
+        })
+        base_url = APP_PUBLIC_URL or str(request.base_url).rstrip("/")
+        reset_link = f"{base_url}/reset-password?token={reset_token}"
+        await _send_reset_email(email, reset_link)
+    return {"ok": True, "message": "Si cet email existe, un lien vient d'être envoyé."}
+
+
+@api_router.post("/auth/reset-password")
+async def reset_password(payload: ResetPayload):
+    record = await db.password_reset_tokens.find_one({"token": payload.token, "used": False})
+    if not record:
+        raise HTTPException(status_code=400, detail="Lien invalide ou déjà utilisé")
+    expires_at = record.get("expires_at")
+    if isinstance(expires_at, datetime):
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if expires_at < datetime.now(timezone.utc):
+            raise HTTPException(status_code=400, detail="Lien expiré")
+    new_hash = _hash_password(payload.password)
+    await db.users.update_one({"id": record["user_id"]}, {"$set": {"password_hash": new_hash}})
+    await db.password_reset_tokens.update_one({"token": payload.token}, {"$set": {"used": True}})
+    return {"ok": True, "message": "Mot de passe mis à jour"}
+
+
+@api_router.delete("/auth/account")
+async def delete_account(current_user: dict = Depends(get_current_user)):
+    uid = current_user["id"]
+    await db.notes.delete_many({"user_id": uid})
+    await db.password_reset_tokens.delete_many({"user_id": uid})
+    await db.users.delete_one({"id": uid})
+    return {"ok": True, "message": "Compte supprimé"}
 
 
 @api_router.post("/notes", response_model=List[Note])
-async def create_note(payload: NoteCreate):
+async def create_note(payload: NoteCreate, current_user: dict = Depends(get_current_user)):
     ocr_text = None
     full_text = payload.content or ""
 
@@ -497,6 +717,7 @@ async def create_note(payload: NoteCreate):
     created: list[Note] = []
     for idx, ai in enumerate(items):
         note = Note(
+            user_id=current_user["id"],
             content=ai["content"] if not has_image else (payload.content or ""),
             ocr_text=ocr_text if idx == 0 else None,  # OCR only on first note
             image_base64=payload.image_base64 if idx == 0 else None,
@@ -522,8 +743,9 @@ async def list_notes(
     q: Optional[str] = None,
     sort: Optional[str] = "recent",  # recent | oldest | urgent | reminder | category
     limit: int = 200,
+    current_user: dict = Depends(get_current_user),
 ):
-    query: dict = {}
+    query: dict = {"user_id": current_user["id"]}
     if category:
         query["categories"] = category
     # Special status values:
@@ -568,15 +790,15 @@ async def list_notes(
 
 
 @api_router.get("/notes/{note_id}", response_model=Note)
-async def get_note(note_id: str):
-    doc = await db.notes.find_one({"id": note_id}, {"_id": 0})
+async def get_note(note_id: str, current_user: dict = Depends(get_current_user)):
+    doc = await db.notes.find_one({"id": note_id, "user_id": current_user["id"]}, {"_id": 0})
     if not doc:
         raise HTTPException(404, "Note not found")
     return Note(**doc)
 
 
 @api_router.patch("/notes/{note_id}", response_model=Note)
-async def update_note(note_id: str, payload: NoteUpdate):
+async def update_note(note_id: str, payload: NoteUpdate, current_user: dict = Depends(get_current_user)):
     updates = {k: v for k, v in payload.model_dump().items() if v is not None}
     if not updates:
         raise HTTPException(400, "No fields to update")
@@ -586,36 +808,41 @@ async def update_note(note_id: str, payload: NoteUpdate):
         updates["categories"] = _remap_categories(updates["categories"]) or ["Divers"]
     updates["updated_at"] = datetime.now(timezone.utc).isoformat()
 
-    result = await db.notes.update_one({"id": note_id}, {"$set": updates})
+    result = await db.notes.update_one(
+        {"id": note_id, "user_id": current_user["id"]},
+        {"$set": updates},
+    )
     if result.matched_count == 0:
         raise HTTPException(404, "Note not found")
-    doc = await db.notes.find_one({"id": note_id}, {"_id": 0})
+    doc = await db.notes.find_one({"id": note_id, "user_id": current_user["id"]}, {"_id": 0})
     return Note(**doc)
 
 
 @api_router.delete("/notes/{note_id}")
-async def delete_note(note_id: str):
-    result = await db.notes.delete_one({"id": note_id})
+async def delete_note(note_id: str, current_user: dict = Depends(get_current_user)):
+    result = await db.notes.delete_one({"id": note_id, "user_id": current_user["id"]})
     if result.deleted_count == 0:
         raise HTTPException(404, "Note not found")
     return {"ok": True}
 
 
 @api_router.get("/dashboard")
-async def dashboard():
+async def dashboard(current_user: dict = Depends(get_current_user)):
+    uid = current_user["id"]
     today = datetime.now(timezone.utc).date()
     today_iso = today.isoformat()
     seven_days = (today + timedelta(days=7)).isoformat()
 
     # Urgent open notes
     urgent_today = await db.notes.find(
-        {"urgent": True, "status": {"$ne": "done"}},
+        {"user_id": uid, "urgent": True, "status": {"$ne": "done"}},
         {"_id": 0},
     ).sort("created_at", -1).to_list(50)
 
     # Upcoming reminders (next 7 days)
     upcoming = await db.notes.find(
         {
+            "user_id": uid,
             "reminder_date": {"$gte": today_iso, "$lte": seven_days},
             "status": {"$ne": "done"},
         },
@@ -625,6 +852,7 @@ async def dashboard():
     # Overdue tasks
     overdue = await db.notes.find(
         {
+            "user_id": uid,
             "reminder_date": {"$lt": today_iso, "$ne": None},
             "status": {"$ne": "done"},
         },
@@ -633,7 +861,7 @@ async def dashboard():
 
     # Stats per category
     pipeline = [
-        {"$match": {"status": {"$ne": "done"}}},
+        {"$match": {"user_id": uid, "status": {"$ne": "done"}}},
         {"$unwind": "$categories"},
         {"$group": {"_id": "$categories", "count": {"$sum": 1}}},
         {"$sort": {"count": -1}},
@@ -641,10 +869,10 @@ async def dashboard():
     cat_stats = await db.notes.aggregate(pipeline).to_list(50)
     by_category = [{"category": c["_id"], "count": c["count"]} for c in cat_stats]
 
-    todo_count = await db.notes.count_documents({"status": "todo"})
-    in_progress_count = await db.notes.count_documents({"status": "in_progress"})
-    done_count = await db.notes.count_documents({"status": "done"})
-    total = await db.notes.count_documents({})
+    todo_count = await db.notes.count_documents({"user_id": uid, "status": "todo"})
+    in_progress_count = await db.notes.count_documents({"user_id": uid, "status": "in_progress"})
+    done_count = await db.notes.count_documents({"user_id": uid, "status": "done"})
+    total = await db.notes.count_documents({"user_id": uid})
 
     return {
         "urgent_today": [Note(**n).model_dump() for n in urgent_today],
@@ -675,6 +903,19 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.on_event("startup")
+async def setup_indexes_and_migrate():
+    """Create indexes and run one-shot migrations."""
+    try:
+        await db.users.create_index("email", unique=True)
+        await db.users.create_index("id", unique=True)
+        await db.notes.create_index([("user_id", 1), ("created_at", -1)])
+        await db.password_reset_tokens.create_index("token", unique=True)
+        await db.password_reset_tokens.create_index("expires_at", expireAfterSeconds=0)
+    except Exception:
+        logger.exception("Index creation failed (non-fatal).")
 
 
 @app.on_event("startup")
