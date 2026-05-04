@@ -15,6 +15,7 @@ export type Note = {
   status: "todo" | "in_progress" | "done";
   reminder_date?: string | null;
   amount?: number | null;
+  comments?: string;
   created_at: string;
   updated_at: string;
 };

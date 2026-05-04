@@ -45,15 +45,90 @@ logger = logging.getLogger(__name__)
 
 # ----- Constants -----
 CATEGORIES = [
-    "Devis", "Finances", "Juridique", "Famille", "Véhicules", "Travaux",
-    "Clients", "Fournisseurs", "Banque", "Administratif", "Santé",
-    "Personnel", "Urgent"
+    "Devis", "Travaux", "Personnel", "Administratif", "Urgent", "Divers"
 ]
 
 URGENT_KEYWORDS = [
     "amende", "avocat", "tribunal", "urgent", "demain", "échéance",
     "impôts", "retard", "paiement immédiat", "immédiat", "asap"
 ]
+
+# Keyword → category mapping used as a deterministic post-processing safety net
+# (so even if Gemini answers "Personnel" for everything, we still tag correctly).
+CATEGORY_KEYWORDS: dict[str, list[str]] = {
+    "Urgent": [
+        "amende", "tribunal", "avocat", "urgent", "asap", "immédiat",
+        "huissier", "saisie", "mise en demeure", "contentieux", "retard",
+    ],
+    "Devis": [
+        "devis", "estimation", "chiffrage", "proposition commerciale",
+    ],
+    "Administratif": [
+        "impôt", "impots", "tva", "nationalité", "nationalite", "douane",
+        "préfecture", "prefecture", "carte d'identité", "carte didentite",
+        "passeport", "permis", "sécurité sociale", "securite sociale",
+        "caf", "pôle emploi", "pole emploi", "déclaration", "declaration",
+        "autorisation", "cgpn", "prévoyance", "prevoyance", "arrêt maladie",
+        "arret maladie", "formation", "attestation", "contrat administratif",
+        "mairie", "ameli", "urssaf",
+    ],
+    "Travaux": [
+        "travaux", "chantier", "peinture", "rampe", "clôture", "cloture",
+        "rénovation", "renovation", "carrelage", "plomberie", "électricité",
+        "electricite", "toiture", "fenêtre", "fenetre", "porte", "escalier",
+        "géomètre", "geometre", "voiture", "moteur", "ford", "nacell",
+        "nacelle", "véhicule", "vehicule", "pavillon", "rampe d'escalier",
+        "pneu", "carrosserie", "menuiserie", "isolation",
+    ],
+    "Personnel": [
+        "maman", "papa", "frère", "frere", "soeur", "sœur", "fils", "fille",
+        "famille", "anniversaire", "cadeau", "rdv", "rendez-vous", "médecin",
+        "medecin", "dentiste", "santé", "sante", "courses", "école", "ecole",
+        "vacances", "ami", "ami(e)", "épouse", "mari", "divorce", "hébergement",
+        "hebergement", "enfant",
+    ],
+}
+
+
+def _heuristic_category(text: str) -> str:
+    """
+    Return the best matching category based on keyword presence, used as a safety
+    net when the LLM defaults to 'Personnel' or 'Divers'.
+    Order of priority: Urgent > Devis > Administratif > Travaux > Personnel > Divers.
+    """
+    low = text.lower()
+    for cat in ("Urgent", "Devis", "Administratif", "Travaux", "Personnel"):
+        for kw in CATEGORY_KEYWORDS.get(cat, []):
+            if kw in low:
+                return cat
+    return "Divers"
+
+
+# Remap legacy category names (from the previous 13-category palette) onto the new 6.
+LEGACY_CATEGORY_MAP: dict[str, str] = {
+    "Famille": "Personnel",
+    "Santé": "Personnel",
+    "Finances": "Administratif",
+    "Banque": "Administratif",
+    "Clients": "Administratif",
+    "Fournisseurs": "Administratif",
+    "Juridique": "Urgent",
+    "Véhicules": "Travaux",
+}
+
+
+def _remap_categories(cats: list) -> list:
+    """Map legacy categories to the new palette and de-duplicate while preserving order."""
+    if not isinstance(cats, list):
+        return ["Divers"]
+    out: list[str] = []
+    for c in cats:
+        if not isinstance(c, str):
+            continue
+        new = LEGACY_CATEGORY_MAP.get(c, c)
+        if new in CATEGORIES and new not in out:
+            out.append(new)
+    return out or ["Divers"]
 
 # ----- Models -----
 class NoteBase(BaseModel):
@@ -79,6 +154,7 @@ class Note(BaseModel):
     status: str = "todo"  # todo | in_progress | done
     reminder_date: Optional[str] = None  # ISO string
     amount: Optional[float] = None
+    comments: str = ""  # User-editable free-form notes / précisions
     created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     updated_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
@@ -86,9 +162,11 @@ class Note(BaseModel):
 class NoteUpdate(BaseModel):
     status: Optional[str] = None
     urgent: Optional[bool] = None
+    title: Optional[str] = None
     content: Optional[str] = None
     reminder_date: Optional[str] = None
     categories: Optional[List[str]] = None
+    comments: Optional[str] = None
 
 
 # ----- AI Service -----
@@ -142,12 +220,17 @@ def _heuristic_urgent(text: str) -> bool:
 
 
 def _fallback_item(text: str) -> dict:
+    cat = _heuristic_category(text)
+    urgent_flag = _heuristic_urgent(text) or cat == "Urgent"
+    cats = [cat]
+    if urgent_flag and "Urgent" not in cats:
+        cats.append("Urgent")
     return {
         "content": text,
         "title": (text[:60] or "Note").strip(),
         "summary": text[:200],
-        "categories": ["Personnel"],
-        "urgent": _heuristic_urgent(text),
+        "categories": cats[:2],
+        "urgent": urgent_flag,
         "reminder_date": None,
         "amount": None,
     }
@@ -274,19 +357,26 @@ async def classify_note(text: str, allow_split: bool = True) -> list[dict]:
     system = (
         "Tu es une IA qui organise des notes en français pour un particulier (gestion familiale, administrative, pro).\n"
         f"Date d'aujourd'hui : {today_iso} ({weekday_fr}).\n"
-        f"Catégories autorisées (utilise UNIQUEMENT ces valeurs exactes) : {', '.join(CATEGORIES)}.\n\n"
+        f"Catégories autorisées (utilise UNIQUEMENT ces 6 valeurs exactes) : {', '.join(CATEGORIES)}.\n\n"
         f"{split_instruction}\n"
+        "RÈGLES DE CATÉGORIE (TRÈS STRICTES, applique-les avant tout) :\n"
+        "- Si le texte contient le mot 'devis' (ou estimation, chiffrage) → catégorie 'Devis'.\n"
+        "- Si le texte contient 'amende', 'avocat', 'tribunal', 'huissier', 'urgent', 'asap', 'mise en demeure' → catégorie 'Urgent'.\n"
+        "- Si le texte parle d'impôts, TVA, nationalité, douane, préfecture, CAF, sécurité sociale, "
+        "permis, passeport, attestation, prévoyance, arrêt maladie, formation, autorisation, mairie, CGPN → catégorie 'Administratif'.\n"
+        "- Si le texte parle de travaux, peinture, clôture, carrelage, plomberie, rénovation, escalier, rampe, "
+        "voiture, moteur, véhicule, pneu, géomètre, chantier → catégorie 'Travaux'.\n"
+        "- Si le texte parle de famille (maman, papa, frère, sœur, enfant, conjoint, hébergement, divorce), de santé "
+        "(rdv médecin, dentiste, médicament), de courses, vacances, anniversaire, cadeau → catégorie 'Personnel'.\n"
+        "- Si rien ne correspond clairement → catégorie 'Divers'.\n"
+        "- Tu peux mettre 1 ou 2 catégories MAX. La 1ère doit être la plus pertinente.\n\n"
         "Pour CHAQUE élément, remplis :\n"
         "- content : le texte original concernant cette note (garde les mots de l'utilisateur).\n"
         "- title : titre court 3-8 mots, clair et descriptif.\n"
         "- summary : résumé en 1 phrase courte.\n"
-        "- categories : 1 à 3 catégories de la liste autorisée. Si rien ne correspond, mets ['Personnel']. "
-        "Indices : 'Devis ...' → ['Devis'], 'Amende ...' → ['Finances','Urgent'], 'avocat / divorce / tribunal' → ['Juridique'], "
-        "'maman / papa / frère / soeur / hébergement / cadeau' → ['Famille'], 'voiture / moteur / pneus' → ['Véhicules'], "
-        "'arrêt maladie / médecin / dentiste / RDV docteur' → ['Santé'], 'TVA / nationalité / Douane / impôts / formation administrative' → ['Administratif'], "
-        "'banque / virement' → ['Banque'], 'client / contrat client' → ['Clients'], 'fournisseur' → ['Fournisseurs'].\n"
-        "- urgent : true si présence de 'amende', 'avocat', 'tribunal', 'urgent', 'demain', 'échéance', 'impôts', 'retard', "
-        "'paiement immédiat', OU délai très court (≤ 2 jours).\n"
+        "- categories : 1 à 2 catégories de la liste autorisée.\n"
+        "- urgent : true si présence de 'amende', 'avocat', 'tribunal', 'urgent', 'demain', 'échéance', "
+        "'impôts', 'retard', 'paiement immédiat', OU délai très court (≤ 2 jours).\n"
         "- reminder_date : DÉTECTE TOUTE DATE OU ÉCHÉANCE et convertis-la en ISO YYYY-MM-DD. "
         "Exemples : 'demain' → date de demain, 'lundi prochain', 'dans 3 jours', 'vendredi', 'avant jeudi', "
         "'le 15 mars', '20/04/2026', 'la semaine prochaine', 'fin du mois'. "
@@ -345,9 +435,18 @@ async def classify_note(text: str, allow_split: bool = True) -> list[dict]:
                 continue
             content = str(item.get("content") or "").strip() or text
             cats = [c for c in (item.get("categories") or []) if c in CATEGORIES]
+            # Apply keyword heuristic: if the LLM defaulted to Personnel/Divers but the
+            # text clearly matches another category, override the primary category.
+            heur = _heuristic_category(content)
+            if heur != "Divers":
+                if not cats or cats[0] in ("Personnel", "Divers") and heur not in cats:
+                    cats = [heur] + [c for c in cats if c != heur]
             if not cats:
-                cats = ["Personnel"]
-            urgent_flag = bool(item.get("urgent", False)) or _heuristic_urgent(content)
+                cats = [heur]
+            urgent_flag = bool(item.get("urgent", False)) or _heuristic_urgent(content) or ("Urgent" in cats)
+            if urgent_flag and "Urgent" not in cats:
+                cats.append("Urgent")
+            cats = cats[:2]  # max 2 categories
             reminder = item.get("reminder_date")
             # Normalise reminder_date: only keep if it looks like ISO YYYY-MM-DD
             if reminder and not re.match(r"^\d{4}-\d{2}-\d{2}$", str(reminder)):
@@ -483,6 +582,8 @@ async def update_note(note_id: str, payload: NoteUpdate):
         raise HTTPException(400, "No fields to update")
     if "status" in updates and updates["status"] not in ("todo", "in_progress", "done"):
         raise HTTPException(400, "Invalid status")
+    if "categories" in updates:
+        updates["categories"] = _remap_categories(updates["categories"]) or ["Divers"]
     updates["updated_at"] = datetime.now(timezone.utc).isoformat()
 
     result = await db.notes.update_one({"id": note_id}, {"$set": updates})
@@ -574,6 +675,26 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.on_event("startup")
+async def migrate_legacy_categories():
+    """One-shot migration: remap old categories ('Famille', 'Santé', ...) onto the new palette."""
+    try:
+        legacy_names = list(LEGACY_CATEGORY_MAP.keys())
+        cursor = db.notes.find({"categories": {"$in": legacy_names}}, {"_id": 0})
+        migrated = 0
+        async for doc in cursor:
+            new_cats = _remap_categories(doc.get("categories") or [])
+            await db.notes.update_one(
+                {"id": doc["id"]},
+                {"$set": {"categories": new_cats, "updated_at": datetime.now(timezone.utc).isoformat()}},
+            )
+            migrated += 1
+        if migrated:
+            logger.info("Migrated %d notes to the new category palette.", migrated)
+    except Exception:
+        logger.exception("Category migration failed (non-fatal).")
 
 
 @app.on_event("shutdown")

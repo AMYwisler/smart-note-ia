@@ -122,7 +122,8 @@ export default function QuickCaptureSheet({ visible, onClose, onCreated }: Props
     >
       <View style={styles.backdrop}>
         <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : undefined}
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 24}
           style={styles.keyboardWrap}
         >
           <View style={styles.sheet} testID="quick-capture-sheet">
